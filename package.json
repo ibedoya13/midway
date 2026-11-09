@@ -1,0 +1,19 @@
+{
+  "name": "midway",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Juego para dos jugadores con estética pixel art (Vue + Go/WebSocket)",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace apps/web run dev",
+    "build:web": "npm --workspace apps/web run build",
+    "test:web": "npm --workspace apps/web run test",
+    "lint:web": "npm --workspace apps/web run lint",
+    "typecheck:web": "npm --workspace apps/web run typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
