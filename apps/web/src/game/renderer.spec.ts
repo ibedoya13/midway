@@ -125,6 +125,41 @@ describe('renderBoard', () => {
     expect(highlight.some((r) => r.x === 3 * TILE_SIZE && r.y === 4 * TILE_SIZE)).toBe(true)
   })
 
+  it('does not throw when the lists arrive as null', () => {
+    const { ctx } = makeCtx()
+    const broken = {
+      width: 10,
+      height: 10,
+      ships: null,
+      sunkShips: null,
+      shots: null,
+    } as unknown as BoardView
+
+    expect(() => renderBoard(ctx, broken, { showShips: false })).not.toThrow()
+    expect(() => renderBoard(ctx, broken, { showShips: true })).not.toThrow()
+  })
+
+  it('tints the sea with the player color', () => {
+    const { ctx, rects } = makeCtx()
+    renderBoard(ctx, emptyBoard(), { showShips: false, color: '#e94f6d' })
+    const sea = rects.find((r) => r.x === 0 && r.y === 0 && r.w === TILE_SIZE)
+    expect(sea).toBeDefined()
+    expect(sea!.color).not.toBe('#12304a')
+    // The tint must be a blend, not the pure player color.
+    expect(sea!.color).not.toBe('#e94f6d')
+  })
+
+  it('tints the sea differently for each player color', () => {
+    const red = makeCtx()
+    const blue = makeCtx()
+    renderBoard(red.ctx, emptyBoard(), { showShips: false, color: '#e94f6d' })
+    renderBoard(blue.ctx, emptyBoard(), { showShips: false, color: '#4f8ef7' })
+
+    const seaOf = (rects: RecordedRect[]) =>
+      rects.find((r) => r.x === 0 && r.y === 0 && r.w === TILE_SIZE)!.color
+    expect(seaOf(red.rects)).not.toBe(seaOf(blue.rects))
+  })
+
   it('draws sunk ships even when ships are hidden', () => {
     const { ctx, rects } = makeCtx()
     const board: BoardView = {

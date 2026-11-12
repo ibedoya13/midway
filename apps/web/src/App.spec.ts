@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
+import BoardGrid from './components/BoardGrid.vue'
 import type { Snapshot } from './game/types'
 
 const h = vi.hoisted(() => {
@@ -97,6 +98,15 @@ function stubCanvas(): void {
 function mountApp() {
   stubCanvas()
   return mount(App)
+}
+
+/** clickCell dispatches a click on the cell (x, y) of the board at the given index. */
+function clickCell(wrapper: ReturnType<typeof mount>, index: number, x: number, y: number): void {
+  const canvas = wrapper.findAll('canvas')[index]
+  const event = new MouseEvent('click', { bubbles: true })
+  Object.defineProperty(event, 'offsetX', { value: 24 * x + 3 })
+  Object.defineProperty(event, 'offsetY', { value: 24 * y + 4 })
+  canvas.element.dispatchEvent(event)
 }
 
 describe('App', () => {
@@ -223,6 +233,91 @@ describe('App', () => {
     await flushPromises()
     await wrapper.find('[data-restart]').trigger('click')
     expect(h.sent).toContainEqual({ type: 'start' })
+  })
+
+  it('clears the selected ship once it is placed', async () => {
+    const wrapper = mountApp()
+    h.welcomeCallbacks.forEach((cb) => cb('p1', 'room-1'))
+    h.stateCallbacks.forEach((cb) => cb(snapshot()))
+    await flushPromises()
+
+    await wrapper.find('[data-ship="carrier"]').trigger('click')
+
+    // The first click places the carrier.
+    clickCell(wrapper, 0, 2, 4)
+    await flushPromises()
+    expect(h.sent.filter((m) => m.type === 'place')).toHaveLength(1)
+
+    // The server confirms the placement: the ship now appears in own.ships.
+    h.stateCallbacks.forEach((cb) =>
+      cb(
+        snapshot({
+          own: {
+            width: 10,
+            height: 10,
+            sunkShips: [],
+            shots: [],
+            ships: [
+              {
+                kind: 'carrier',
+                name: 'Portaaviones',
+                size: 5,
+                x: 2,
+                y: 4,
+                orientation: 'horizontal',
+              },
+            ],
+          },
+        }),
+      ),
+    )
+    await flushPromises()
+
+    // Clicking the board again must not try to place the carrier a second
+    // time: the server would answer "el portaaviones ya fue colocado".
+    clickCell(wrapper, 0, 2, 4)
+    await flushPromises()
+    expect(h.sent.filter((m) => m.type === 'place')).toHaveLength(1)
+
+    // Prove the click still reaches the board: placing another ship works.
+    await wrapper.find('[data-ship="cruiser"]').trigger('click')
+    clickCell(wrapper, 0, 6, 6)
+    await flushPromises()
+
+    const places = h.sent.filter((m) => m.type === 'place')
+    expect(places).toHaveLength(2)
+    expect(places[1]).toEqual({
+      type: 'place',
+      kind: 'cruiser',
+      x: 6,
+      y: 6,
+      orientation: 'horizontal',
+    })
+  })
+
+  it('paints the enemy board with the opponent color', async () => {
+    const wrapper = mountApp()
+    // I am the second player (blue), so the enemy board must be red.
+    h.welcomeCallbacks.forEach((cb) => cb('p2', 'room-1'))
+    h.stateCallbacks.forEach((cb) => cb(snapshot()))
+    await flushPromises()
+
+    const grids = wrapper.findAllComponents(BoardGrid)
+    expect(grids).toHaveLength(2)
+    expect(grids[0].props('playerColor')).toBe('#4f8ef7')
+    expect(grids[1].props('playerColor')).toBe('#e94f6d')
+  })
+
+  it('paints the enemy board with the opponent color for the first player', async () => {
+    const wrapper = mountApp()
+    // I am the first player (red), so the enemy board must be blue.
+    h.welcomeCallbacks.forEach((cb) => cb('p1', 'room-1'))
+    h.stateCallbacks.forEach((cb) => cb(snapshot()))
+    await flushPromises()
+
+    const grids = wrapper.findAllComponents(BoardGrid)
+    expect(grids[0].props('playerColor')).toBe('#e94f6d')
+    expect(grids[1].props('playerColor')).toBe('#4f8ef7')
   })
 
   it('sends ready when the fleet panel is ready', async () => {

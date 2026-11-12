@@ -6,6 +6,7 @@
  */
 
 import { COLUMN_LABELS } from './board'
+import { normalizeBoard } from './normalize'
 import type { BoardView, ShipView } from './types'
 
 /** Size in logical pixels of a single board cell. */
@@ -59,8 +60,40 @@ export interface RenderOptions {
   highlight?: { x: number; y: number } | null
   /** Cell under the pointer. */
   hover?: { x: number; y: number } | null
-  /** Color used for the ships. */
+  /** Color of the side owning the board: used for the ships and to tint the sea. */
   color?: string
+}
+
+/**
+ * tint blends a base color with an accent color.
+ *
+ * @param base hex color to blend into
+ * @param accent hex color to blend with
+ * @param amount weight of the accent, from 0 to 1
+ */
+export function tint(base: string, accent: string, amount: number): string {
+  const parse = (hex: string): [number, number, number] => {
+    const clean = hex.replace('#', '')
+    const full =
+      clean.length === 3
+        ? clean
+            .split('')
+            .map((c) => c + c)
+            .join('')
+        : clean
+    return [
+      parseInt(full.slice(0, 2), 16),
+      parseInt(full.slice(2, 4), 16),
+      parseInt(full.slice(4, 6), 16),
+    ]
+  }
+  const [r1, g1, b1] = parse(base)
+  const [r2, g2, b2] = parse(accent)
+  const mix = (a: number, b: number) =>
+    Math.round(a + (b - a) * amount)
+      .toString(16)
+      .padStart(2, '0')
+  return `#${mix(r1, r2)}${mix(g1, g2)}${mix(b1, b2)}`
 }
 
 /**
@@ -94,22 +127,25 @@ export function renderBoard(
   board: BoardView,
   opts: RenderOptions,
 ): void {
-  const width = board.width || 10
-  const height = board.height || 10
+  // Guard against a malformed board: a null list would throw on forEach and
+  // break the whole render.
+  const safe = normalizeBoard(board)
+  const width = safe.width || 10
+  const height = safe.height || 10
   const color = opts.color ?? PALETTE.red
 
   ctx.imageSmoothingEnabled = false
 
-  drawSea(ctx, width, height)
+  drawSea(ctx, width, height, color)
   drawGrid(ctx, width, height)
 
   if (opts.showShips) {
-    board.ships.forEach((ship) => drawShip(ctx, ship, color, false))
+    safe.ships.forEach((ship) => drawShip(ctx, ship, color, false))
   }
 
-  board.sunkShips.forEach((ship) => drawShip(ctx, ship, color, true))
+  safe.sunkShips.forEach((ship) => drawShip(ctx, ship, color, true))
 
-  board.shots.forEach((shot) => {
+  safe.shots.forEach((shot) => {
     if (shot.result === 'water') drawWater(ctx, shot.x, shot.y)
     else if (shot.result === 'hit') drawHit(ctx, shot.x, shot.y)
     else drawSunk(ctx, shot.x, shot.y)
@@ -125,15 +161,22 @@ export function renderBoard(
   }
 }
 
-function drawSea(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  ctx.fillStyle = PALETTE.sea
+function drawSea(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  color: string,
+): void {
+  // Each side sees its own sea tinted with its color, so the two boards are
+  // told apart even when no ship is visible.
+  ctx.fillStyle = tint(PALETTE.sea, color, 0.22)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
     }
   }
 
-  ctx.fillStyle = PALETTE.seaDark
+  ctx.fillStyle = tint(PALETTE.seaDark, color, 0.22)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       if ((x + y) % 2 !== 0) continue

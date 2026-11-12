@@ -118,6 +118,20 @@ func TestReadyFailsWhenFleetIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestGameDoesNotStartWithASingleReadyPlayer(t *testing.T) {
+	g := New(10, 10)
+	g.AddPlayer("p1", "A")
+
+	readyFleet(t, g, "p1")
+
+	if g.Phase() != PhaseSetup {
+		t.Fatalf("phase = %q with one ready player, want %q", g.Phase(), PhaseSetup)
+	}
+	if g.CurrentTurn() != "" {
+		t.Fatalf("current turn = %q, want empty", g.CurrentTurn())
+	}
+}
+
 func TestGameStartsWhenBothPlayersAreReady(t *testing.T) {
 	g := New(10, 10)
 	g.AddPlayer("p1", "A")

@@ -16,7 +16,7 @@ type Player struct {
 	// Board holds the player's own fleet and the shots it received.
 	Board *Board `json:"-"`
 	// Fleet is the set of ships the player still has to place.
-	Fleet []ShipSpec `json:"fleet"`
+	Fleet []ShipSpec `json:"-"`
 	// Ready reports whether the player finished placing its fleet.
 	Ready bool `json:"ready"`
 }
@@ -198,7 +198,8 @@ func (g *Game) PlaceShip(id string, kind ShipKind, x, y int, o Orientation) erro
 	return nil
 }
 
-// RemoveShip removes a ship from the player's own board.
+// RemoveShip removes a ship from the player's own board. Removing a ship
+// cancels the confirmation of the fleet, so the player can place it again.
 func (g *Game) RemoveShip(id string, kind ShipKind) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -210,7 +211,11 @@ func (g *Game) RemoveShip(id string, kind ShipKind) error {
 	if g.phase != PhaseSetup {
 		return fmt.Errorf("la partida ya empezó")
 	}
-	return p.Board.RemoveShip(kind)
+	if err := p.Board.RemoveShip(kind); err != nil {
+		return err
+	}
+	p.Ready = false
+	return nil
 }
 
 // Ready marks the player's fleet as complete. The match starts once both
@@ -231,6 +236,11 @@ func (g *Game) Ready(id string) error {
 	}
 	p.Ready = true
 
+	// The match only starts when the two players have both confirmed their
+	// fleet: a single ready player must keep waiting for the opponent.
+	if len(g.players) < 2 {
+		return nil
+	}
 	for _, other := range g.players {
 		if !other.Ready {
 			return nil
@@ -315,8 +325,22 @@ func (g *Game) SnapshotFor(id string) Snapshot {
 		}
 	}
 
-	view := BoardView{Width: g.width, Height: g.height}
-	enemyView := BoardView{Width: g.width, Height: g.height}
+	// The lists must be empty arrays, never null: the frontend iterates them
+	// directly to draw the boards.
+	view := BoardView{
+		Width:     g.width,
+		Height:    g.height,
+		Ships:     []ShipView{},
+		SunkShips: []ShipView{},
+		Shots:     []ShotView{},
+	}
+	enemyView := BoardView{
+		Width:     g.width,
+		Height:    g.height,
+		Ships:     []ShipView{},
+		SunkShips: []ShipView{},
+		Shots:     []ShotView{},
+	}
 	yourFleet := DefaultFleet()
 	enemyFleet := DefaultFleet()
 

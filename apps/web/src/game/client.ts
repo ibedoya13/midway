@@ -1,3 +1,4 @@
+import { normalizeSnapshot } from './normalize'
 import type { ClientMessage, Orientation, ServerMessage, ShipKind, Snapshot } from './types'
 
 export interface GameClientOptions {
@@ -141,7 +142,9 @@ export class GameClient {
         break
       case 'state':
         if (message.state) {
-          this.stateListeners.forEach((listener) => listener(message.state as Snapshot))
+          // A malformed payload must not break the UI: normalize it first.
+          const state = normalizeSnapshot(message.state as Snapshot)
+          this.stateListeners.forEach((listener) => listener(state))
         }
         break
       case 'error':

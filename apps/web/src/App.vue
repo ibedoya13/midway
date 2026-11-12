@@ -6,9 +6,15 @@ import FleetPanel from './components/FleetPanel.vue'
 import HudPanel from './components/HudPanel.vue'
 import { GameClient } from './game/client'
 import { COLUMN_LABELS } from './game/board'
+import { resolveWebSocketUrl } from './game/url'
 import type { Orientation, ShipKind, Snapshot } from './game/types'
 
-const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8080/ws'
+// La URL del backend se deriva del host de la página: así, un teléfono en la
+// misma red se conecta a la IP de tu máquina y no a su propio localhost.
+const WS_URL = resolveWebSocketUrl(
+  window.location.host,
+  import.meta.env.VITE_WS_URL,
+)
 
 const client = new GameClient(WS_URL)
 
@@ -49,6 +55,7 @@ const enemyBoard = computed(
 )
 const myFleet = computed(() => snapshot.value?.yourFleet ?? [])
 const placedShips = computed(() => ownBoard.value.ships)
+const placedKinds = computed(() => new Set(placedShips.value.map((ship) => ship.kind)))
 const canReady = computed(() => myFleet.value.length > 0 && placedShips.value.length === myFleet.value.length)
 const isMyTurn = computed(() => snapshot.value?.currentTurn === playerId.value)
 const winnerName = computed(() => {
@@ -57,6 +64,12 @@ const winnerName = computed(() => {
 })
 const myColor = computed(
   () => players.value.find((player) => player.id === playerId.value)?.color ?? '#e94f6d',
+)
+// The enemy board uses the color of the opponent, so each player sees their
+// own sea in their own color and the rival sea in the rival color.
+const enemyColor = computed(
+  () =>
+    players.value.find((player) => player.id !== playerId.value)?.color ?? '#4f8ef7',
 )
 
 function connect(): void {
@@ -68,6 +81,12 @@ function placeShip(x: number, y: number): void {
   const kind = selectedKind.value
   if (!kind) {
     error.value = 'Elige un barco de la flota antes de colocarlo.'
+    return
+  }
+  // A ship that is already on the board must not be placed again: the server
+  // would answer "el portaaviones ya fue colocado".
+  if (placedKinds.value.has(kind)) {
+    error.value = 'Ese barco ya está colocado. Elige otro.'
     return
   }
   client.place(kind, x, y, orientation.value)
@@ -198,7 +217,7 @@ onBeforeUnmount(() => {
               :board="enemyBoard"
               :show-ships="false"
               :interactive="false"
-              player-color="#4f8ef7"
+              :player-color="enemyColor"
             />
           </div>
         </div>
@@ -247,7 +266,7 @@ onBeforeUnmount(() => {
             :board="enemyBoard"
             :show-ships="false"
             :interactive="isMyTurn"
-            player-color="#4f8ef7"
+            :player-color="enemyColor"
             @shoot="onEnemyClick"
           />
         </div>

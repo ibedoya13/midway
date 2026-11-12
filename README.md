@@ -47,6 +47,41 @@ make dev-web     # npm --workspace apps/web run dev
 Abre <http://localhost:5173> en dos ventanas o pestañas: cada pestaña es un jugador.
 Ambas deben entrar en la sala antes de poder colocar la flota.
 
+### Jugar en la red local (Wi-Fi)
+
+Para jugar desde el teléfono o desde otro portátil en el mismo Wi-Fi:
+
+```bash
+make dev
+```
+
+El servidor de Vite ya publica en `http://<tu-IP>:5173/`. Averigua tu IP con:
+
+```bash
+# macOS
+ipconfig getifaddr en0
+# Linux
+hostname -I | awk '{print $1}'
+```
+
+Abre esa dirección en los dos dispositivos (por ejemplo `http://192.168.0.2:5173/`).
+El frontend detecta el host con el que abriste la página y se conecta solo al
+backend por `ws://<tu-IP>:8080/ws`, así que no hay nada que configurar.
+
+Detalles a tener en cuenta:
+
+- **El firewall de macOS** puede pedir permiso la primera vez para aceptar
+  conexiones entrantes de Python/Node. Si el dispositivo no conecta, revisa
+  *Ajustes del Sistema → Red → Firewall → Firewall de macOS* y permite
+  `go`/`node`.
+- Los dos dispositivos deben estar en la **misma red Wi-Fi** y la red no debe
+  tener aislamiento de clientes activado (algunos Wi-Fi de invitados lo tienen).
+- Si el router usa un rango como `192.168.0.x` pero tu IP es de otra,
+  `ipconfig` te dirá la correcta; usa siempre la que Vite imprime como
+  `Network:` al arrancar.
+- Para fijar la URL a mano (por ejemplo, si el backend está en otra máquina),
+  define `VITE_WS_URL=ws://192.168.0.2:8080/ws` antes de `make dev-web`.
+
 ## Cómo se juega
 
 1. **Preparación.** Cada jugador coloca en secreto su flota de 5 barcos (17 casillas):
@@ -71,7 +106,7 @@ make build       # binario Go + build de producción del frontend
 | --- | --- | --- |
 | `PORT` | `8080` | Puerto del backend |
 | `BOARD_SIZE` | `10` | Lado del tablero (columnas y filas) |
-| `VITE_WS_URL` | `ws://localhost:8080/ws` | URL del WebSocket (frontend) |
+| `VITE_WS_URL` | *(derivada del host de la página)* | URL del WebSocket (frontend). Si no se define, se calcula como `ws://<host-de-la-página>:8080/ws`, lo que permite jugar en la red local sin configurarla. |
 
 ## Protocolo WebSocket
 

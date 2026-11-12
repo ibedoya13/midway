@@ -12,5 +12,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Escucha en todas las interfaces para poder abrirlo desde el móvil.
+    host: true,
+  },
+  preview: {
+    port: 4173,
+    host: true,
   },
 })
