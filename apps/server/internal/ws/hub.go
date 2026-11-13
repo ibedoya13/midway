@@ -3,14 +3,17 @@ package ws
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"midway/server/internal/game"
+	"midway/server/internal/room"
 )
 
 const (
@@ -32,28 +35,46 @@ var upgrader = websocket.Upgrader{
 
 // client is a single WebSocket connection.
 type client struct {
-	id     string
-	conn   *websocket.Conn
-	send   chan []byte
-	done   chan struct{}
-	hub    *Hub
-	joined bool
+	id   string
+	conn *websocket.Conn
+	send chan []byte
+	done chan struct{}
+	hub  *Hub
+
+	// roomMu guards the room field: it is written by the read goroutine and
+	// read by the broadcast goroutine.
+	roomMu sync.RWMutex
+	// room is the room the client belongs to, nil until it joins one.
+	room *room.Room
 }
 
-// Hub owns the match and the connected clients.
+// currentRoom returns the room of the client, or nil when it has not joined
+// one yet.
+func (c *client) currentRoom() *room.Room {
+	c.roomMu.RLock()
+	defer c.roomMu.RUnlock()
+	return c.room
+}
+
+// setRoom assigns the room of the client.
+func (c *client) setRoom(r *room.Room) {
+	c.roomMu.Lock()
+	defer c.roomMu.Unlock()
+	c.room = r
+}
+
+// Hub owns the rooms and the connected clients.
 type Hub struct {
-	game    *game.Game
-	room    string
+	rooms   *room.Registry
 	mu      sync.RWMutex
 	clients map[*client]bool
 	stop    chan struct{}
 }
 
-// NewHub creates a hub around a game instance and starts its broadcast loop.
-func NewHub(g *game.Game) *Hub {
+// NewHub creates a hub over a room registry and starts its broadcast loop.
+func NewHub(rooms *room.Registry) *Hub {
 	h := &Hub{
-		game:    g,
-		room:    "midway-1",
+		rooms:   rooms,
 		clients: make(map[*client]bool),
 		stop:    make(chan struct{}),
 	}
@@ -109,9 +130,8 @@ func (h *Hub) Run() {
 	}
 }
 
-// broadcastState sends the current snapshot to every client. Each client
-// receives its own view: the own board shows the ships, the enemy board
-// hides them.
+// broadcastState sends the current snapshot of each room to the clients of
+// that room. A client only ever sees the match it belongs to.
 func (h *Hub) broadcastState() {
 	h.mu.RLock()
 	clients := make([]*client, 0, len(h.clients))
@@ -121,7 +141,12 @@ func (h *Hub) broadcastState() {
 	h.mu.RUnlock()
 
 	for _, c := range clients {
-		snapshot := h.game.SnapshotFor(c.id)
+		r := c.currentRoom()
+		if r == nil {
+			// The client has not entered a room yet.
+			continue
+		}
+		snapshot := r.Game().SnapshotFor(c.id)
 		payload, err := json.Marshal(ServerMessage{Type: TypeState, State: &snapshot})
 		if err != nil {
 			log.Printf("ws: marshal state: %v", err)
@@ -151,9 +176,7 @@ func (h *Hub) remove(c *client) {
 func (c *client) readPump() {
 	defer func() {
 		c.hub.remove(c)
-		if c.joined {
-			c.hub.game.RemovePlayer(c.id)
-		}
+		c.leaveRoom()
 	}()
 
 	c.conn.SetReadLimit(4096)
@@ -174,60 +197,152 @@ func (c *client) readPump() {
 // handle processes a single client message.
 func (c *client) handle(msg ClientMessage) {
 	switch msg.Type {
+	case TypeCreate:
+		c.createRoom(msg.Name)
 	case TypeJoin:
-		if c.joined {
-			c.sendError("ya estás en una partida")
-			return
-		}
-		if _, ok := c.hub.game.AddPlayer(c.id, msg.Name); !ok {
-			c.sendError("la sala está llena")
-			return
-		}
-		c.joined = true
-		c.sendJSON(ServerMessage{Type: TypeWelcome, PlayerID: c.id, Room: c.hub.room})
+		c.joinRoom(msg.Name, msg.Room, msg.Key)
+	case TypeLeave:
+		c.leaveRoom()
+		c.sendJSON(ServerMessage{Type: TypeLeft})
 	case TypePlace:
-		if !c.joined {
-			c.sendError("debes unirte antes de jugar")
+		g, err := c.requireGame()
+		if err != nil {
+			c.sendError(err.Error())
 			return
 		}
-		if err := c.hub.game.PlaceShip(c.id, game.ShipKind(msg.Kind), msg.X, msg.Y, game.Orientation(msg.Orientation)); err != nil {
+		if err := g.PlaceShip(c.id, game.ShipKind(msg.Kind), msg.X, msg.Y, game.Orientation(msg.Orientation)); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeRemove:
-		if !c.joined {
-			c.sendError("debes unirte antes de jugar")
+		g, err := c.requireGame()
+		if err != nil {
+			c.sendError(err.Error())
 			return
 		}
-		if err := c.hub.game.RemoveShip(c.id, game.ShipKind(msg.Kind)); err != nil {
+		if err := g.RemoveShip(c.id, game.ShipKind(msg.Kind)); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeReady:
-		if !c.joined {
-			c.sendError("debes unirte antes de jugar")
+		g, err := c.requireGame()
+		if err != nil {
+			c.sendError(err.Error())
 			return
 		}
-		if err := c.hub.game.Ready(c.id); err != nil {
+		if err := g.Ready(c.id); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeShoot:
-		if !c.joined {
-			c.sendError("debes unirte antes de jugar")
+		g, err := c.requireGame()
+		if err != nil {
+			c.sendError(err.Error())
 			return
 		}
-		if _, err := c.hub.game.Shoot(c.id, msg.X, msg.Y); err != nil {
+		if _, err := g.Shoot(c.id, msg.X, msg.Y); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeStart:
-		if !c.joined {
-			c.sendError("debes unirte antes de jugar")
+		g, err := c.requireGame()
+		if err != nil {
+			c.sendError(err.Error())
 			return
 		}
-		c.hub.game.Reset()
+		g.Reset()
 	case TypePing:
 		c.sendJSON(ServerMessage{Type: TypePong})
 	default:
 		c.sendError("mensaje desconocido: " + msg.Type)
 	}
+}
+
+// createRoom makes a new room and joins it as its first player.
+func (c *client) createRoom(name string) {
+	if c.currentRoom() != nil {
+		c.sendError("ya estás en una sala")
+		return
+	}
+	created, err := c.hub.rooms.Create()
+	if err != nil {
+		c.sendError(err.Error())
+		return
+	}
+	if _, ok := created.Game().AddPlayer(c.id, name); !ok {
+		c.hub.rooms.Delete(created.Code())
+		c.sendError("no se pudo entrar en la sala")
+		return
+	}
+	c.setRoom(created)
+	// The creator receives the secret key: it is what it has to share with
+	// the opponent to let the opponent in.
+	c.sendJSON(ServerMessage{
+		Type: TypeWelcome, PlayerID: c.id, Room: created.Code(), Key: created.Key(),
+	})
+}
+
+// joinRoom enters an existing room identified by its six-digit code and its
+// secret key.
+func (c *client) joinRoom(name, code, key string) {
+	if c.currentRoom() != nil {
+		c.sendError("ya estás en una sala")
+		return
+	}
+	code = strings.TrimSpace(code)
+	if !room.IsValidCode(code) {
+		c.sendError("el código de sala debe tener seis dígitos")
+		return
+	}
+	found, ok := c.hub.rooms.Get(code)
+	if !ok {
+		c.sendError("no existe la sala " + code)
+		return
+	}
+	// The secret key is the credential: the code alone does not admit a
+	// player, so a guessed code is not enough to sit in a match.
+	if !found.MatchesKey(key) {
+		c.sendError("la clave de la sala no es correcta")
+		return
+	}
+	// A match that already started cannot be joined: it would break the turn
+	// order and the boards of the players who are already playing.
+	if found.Game().Phase() == game.PhasePlaying {
+		c.sendError("la partida de esa sala ya empezó")
+		return
+	}
+	if _, ok := found.Game().AddPlayer(c.id, name); !ok {
+		c.sendError("la sala está llena")
+		return
+	}
+	c.setRoom(found)
+	c.sendJSON(ServerMessage{Type: TypeWelcome, PlayerID: c.id, Room: found.Code()})
+}
+
+// leaveRoom removes the client from its room. The room is released when it is
+// left empty, and a match in progress is abandoned.
+func (c *client) leaveRoom() {
+	r := c.currentRoom()
+	if r == nil {
+		return
+	}
+	c.setRoom(nil)
+
+	g := r.Game()
+	wasPlaying := g.Phase() == game.PhasePlaying
+	g.RemovePlayer(c.id)
+	if wasPlaying {
+		// The match is abandoned: the remaining player starts over.
+		g.Reset()
+	}
+	if len(g.Players()) == 0 {
+		c.hub.rooms.Delete(r.Code())
+	}
+}
+
+// requireGame returns the match of the client's room.
+func (c *client) requireGame() (*game.Game, error) {
+	r := c.currentRoom()
+	if r == nil {
+		return nil, fmt.Errorf("debes entrar en una sala antes de jugar")
+	}
+	return r.Game(), nil
 }
 
 // sendJSON marshals and queues a message for the client.

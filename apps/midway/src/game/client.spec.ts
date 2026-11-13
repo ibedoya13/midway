@@ -67,7 +67,7 @@ describe('GameClient', () => {
     const client = new GameClient('ws://localhost:8080/ws', {
       socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
     })
-    client.connect('Ana')
+    client.connect()
     expect(FakeSocket.instances).toHaveLength(1)
     expect(FakeSocket.instances[0].url).toBe('ws://localhost:8080/ws')
   })
@@ -76,17 +76,54 @@ describe('GameClient', () => {
     const client = new GameClient('ws://x', {
       socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
     })
-    client.connect('Ana')
+    client.connect()
     client.place('carrier', 0, 0, 'horizontal')
     client.ready()
     const socket = FakeSocket.instances[0]
     expect(socket.sent).toHaveLength(0)
     socket.open()
     expect(socket.parsed()).toEqual([
-      { type: 'join', name: 'Ana' },
       { type: 'place', kind: 'carrier', x: 0, y: 0, orientation: 'horizontal' },
       { type: 'ready' },
     ])
+  })
+
+  it('sends a create message with the name', () => {
+    const client = new GameClient('ws://x', {
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    })
+    client.connect()
+    FakeSocket.instances[0].open()
+    client.createRoom('Ana')
+
+    expect(FakeSocket.instances[0].parsed()).toContainEqual({ type: 'create', name: 'Ana' })
+  })
+
+  it('sends a join message with the room code and the secret key', () => {
+    const client = new GameClient('ws://x', {
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    })
+    client.connect()
+    FakeSocket.instances[0].open()
+    client.joinRoom('Beto', '123456', 'a'.repeat(32))
+
+    expect(FakeSocket.instances[0].parsed()).toContainEqual({
+      type: 'join',
+      name: 'Beto',
+      room: '123456',
+      key: 'a'.repeat(32),
+    })
+  })
+
+  it('sends a leave message', () => {
+    const client = new GameClient('ws://x', {
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    })
+    client.connect()
+    FakeSocket.instances[0].open()
+    client.leaveRoom()
+
+    expect(FakeSocket.instances[0].parsed()).toContainEqual({ type: 'leave' })
   })
 
   it('sends each action with the right payload once open', () => {
@@ -101,7 +138,7 @@ describe('GameClient', () => {
     client.shoot(5, 6)
     client.start()
     client.ping()
-    expect(socket.parsed().slice(1)).toEqual([
+    expect(socket.parsed()).toEqual([
       { type: 'place', kind: 'cruiser', x: 3, y: 4, orientation: 'vertical' },
       { type: 'remove', kind: 'cruiser' },
       { type: 'shoot', x: 5, y: 6 },
@@ -120,14 +157,14 @@ describe('GameClient', () => {
     client.onState(onState)
     client.onError(onError)
     client.onWelcome(onWelcome)
-    client.connect('Ana')
+    client.connect()
     const socket = FakeSocket.instances[0]
     socket.open()
     const snapshot = makeSnapshot('playing')
-    socket.receive({ type: 'welcome', playerId: 'p1', room: 'room-1' })
+    socket.receive({ type: 'welcome', playerId: 'p1', room: '123456', key: 'a'.repeat(32) })
     socket.receive({ type: 'state', state: snapshot })
     socket.receive({ type: 'error', message: 'boom' })
-    expect(onWelcome).toHaveBeenCalledWith('p1', 'room-1')
+    expect(onWelcome).toHaveBeenCalledWith('p1', '123456', 'a'.repeat(32))
     expect(onState).toHaveBeenCalledWith(snapshot)
     expect(onError).toHaveBeenCalledWith('boom')
   })

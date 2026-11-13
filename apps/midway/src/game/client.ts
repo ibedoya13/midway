@@ -7,7 +7,7 @@ export interface GameClientOptions {
 
 type StateListener = (state: Snapshot) => void
 type ErrorListener = (message: string) => void
-type WelcomeListener = (playerId: string, room: string) => void
+type WelcomeListener = (playerId: string, room: string, key?: string) => void
 type CloseListener = () => void
 
 /**
@@ -31,7 +31,7 @@ export class GameClient {
     this.socketFactory = options.socketFactory ?? ((target) => new WebSocket(target))
   }
 
-  connect(name?: string): void {
+  connect(): void {
     this.disconnect()
     const socket = this.socketFactory(this.url)
     this.socket = socket
@@ -48,8 +48,22 @@ export class GameClient {
     socket.onerror = () => {
       this.errorListeners.forEach((listener) => listener('error de conexión'))
     }
+  }
 
-    this.send({ type: 'join', name })
+  /** createRoom asks the server for a new room and joins it. */
+  createRoom(name?: string): void {
+    this.send({ type: 'create', name })
+  }
+
+  /** joinRoom joins an existing room identified by its six-digit code and
+   * its secret key. */
+  joinRoom(name: string | undefined, code: string, key: string): void {
+    this.send({ type: 'join', name, room: code, key })
+  }
+
+  /** leaveRoom leaves the current room and returns to the lobby. */
+  leaveRoom(): void {
+    this.send({ type: 'leave' })
   }
 
   disconnect(): void {
@@ -137,7 +151,7 @@ export class GameClient {
     switch (message.type) {
       case 'welcome':
         this.welcomeListeners.forEach((listener) =>
-          listener(message.playerId ?? '', message.room ?? ''),
+          listener(message.playerId ?? '', message.room ?? '', message.key),
         )
         break
       case 'state':

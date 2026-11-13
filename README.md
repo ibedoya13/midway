@@ -82,6 +82,34 @@ Detalles a tener en cuenta:
 - Para fijar la URL a mano (por ejemplo, si el backend está en otra máquina),
   define `VITE_WS_URL=ws://192.168.0.2:8080/ws` antes de `make dev-web`.
 
+## Salas
+
+Al entrar, el jugador tiene dos opciones:
+
+- **Crear sala.** El servidor genera un código aleatorio de seis dígitos (por
+  ejemplo `097344`) y una **clave secreta** de 32 caracteres hexadecimales. El
+  jugador entra como primero y ve un enlace de invitación
+  (`/?room=097344&key=1a2b3c…`) para compartir.
+- **Unirse.** Se escribe el código y la clave de una sala existente — o, más
+  simple, se abre el enlace de invitación, que ya los trae rellenos.
+
+Reglas de las salas:
+
+- **El código no es una credencial.** Es público y legible (un millón de
+  combinaciones), así que por sí solo **no** deja entrar: hace falta la clave
+  secreta, que se genera con `crypto/rand` y se compara en tiempo constante.
+  Solo el creador de la sala recibe la clave; el que se une ya la conoce. Un
+  tercero que adivine el código se queda fuera.
+
+- Pueden existir **hasta 10 salas simultáneas**. Una sala vacía se libera sola.
+- **No se puede entrar en una sala cuya partida ya empezó**: el servidor
+  rechaza la entrada para no romper el orden de turnos ni los tableros de los
+  jugadores que ya están jugando.
+- Cada sala es un juego independiente: los jugadores de una sala nunca ven el
+  estado de otra.
+- El botón **Salir** abandona la sala y devuelve al vestíbulo. Si se sale a
+  mitad de una partida, esa partida se reinicia para el jugador restante.
+
 ## Cómo se juega
 
 1. **Preparación.** Cada jugador coloca en secreto su flota de 5 barcos (17 casillas):
@@ -127,8 +155,17 @@ gcloud run deploy midway --source . \
   --min-instances=1 --max-instances=1 --session-affinity --port=8080
 ```
 
-El servicio queda en `https://midway-463140756941.us-central1.run.app`
-(compruébalo con `curl https://<servicio>/health`).
+El servicio queda en dos URLs que apuntan al mismo servicio (una es el
+alias de revisión corta y la otra la del número de proyecto):
+
+- `https://midway-463140756941.us-central1.run.app` (la que reporta `gcloud`)
+- `https://midway-akeen4rlgq-uc.a.run.app`
+
+Compruébalo con `curl https://<servicio>/health`. Ambas enrutan al tráfico de
+la última revisión, así que `wss://<cualquiera-de-las-dos>/ws` funciona. El
+frontend se construye **después** del despliegue del backend, porque la URL del
+WebSocket queda incrustada en el bundle: si cambia el backend, hay que
+reconstruir y redesplegar el frontend.
 
 ### Frontend → Cloudflare Pages
 
@@ -136,7 +173,7 @@ La URL del WebSocket se embebe en el bundle en tiempo de build, así que el
 frontend se construye **después** de desplegar el backend:
 
 ```bash
-VITE_WS_URL="wss://midway-463140756941.us-central1.run.app/ws" \
+VITE_WS_URL="wss://midway-akeen4rlgq-uc.a.run.app/ws" \
   npm --workspace apps/midway run build
 
 cd apps/midway && cf deploy dist
@@ -197,7 +234,9 @@ Mensajes JSON. Cliente → servidor:
 
 | Mensaje | Campos | Descripción |
 | --- | --- | --- |
-| `join` | `name` | Entra a la sala (nombre opcional) |
+| `create` | `name` | Crea una sala nueva y entra en ella (nombre opcional) |
+| `join` | `name`, `room`, `key` | Entra a la sala existente con su código de 6 dígitos y su clave secreta |
+| `leave` | — | Sale de la sala y vuelve al vestíbulo |
 | `place` | `kind`, `x`, `y`, `orientation` | Coloca un barco en tu tablero |
 | `remove` | `kind` | Quita un barco de tu tablero |
 | `ready` | — | Confirma la flota (empieza cuando ambos confirman) |
@@ -209,7 +248,8 @@ Servidor → cliente:
 
 | Mensaje | Campos | Descripción |
 | --- | --- | --- |
-| `welcome` | `playerId`, `room` | Confirmación de conexión |
+| `welcome` | `playerId`, `room`, `key` | Confirmación de conexión; `room` es el código de 6 dígitos y `key` la clave secreta, que solo se envía al creador de la sala |
+| `left` | — | Confirmación de salida de la sala |
 | `state` | `state` | Instantánea de la partida (ver abajo) |
 | `error` | `message` | Error de protocolo |
 | `pong` | — | Respuesta a `ping` |

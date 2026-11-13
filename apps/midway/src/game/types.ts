@@ -64,8 +64,21 @@ export interface Snapshot {
 }
 
 export interface ClientMessage {
-  type: 'join' | 'place' | 'remove' | 'ready' | 'shoot' | 'start' | 'ping'
+  type:
+    | 'create'
+    | 'join'
+    | 'leave'
+    | 'place'
+    | 'remove'
+    | 'ready'
+    | 'shoot'
+    | 'start'
+    | 'ping'
   name?: string
+  /** Six-digit code of the room to join. */
+  room?: string
+  /** Secret key of the room: the credential that admits a player. */
+  key?: string
   kind?: ShipKind
   x?: number
   y?: number
@@ -73,9 +86,12 @@ export interface ClientMessage {
 }
 
 export interface ServerMessage {
-  type: 'welcome' | 'state' | 'error' | 'pong'
+  type: 'welcome' | 'state' | 'error' | 'pong' | 'left'
   playerId?: string
+  /** Six-digit code of the room the player joined. */
   room?: string
+  /** Secret key of the room, sent only to the player that created it. */
+  key?: string
   message?: string
   state?: Snapshot
 }

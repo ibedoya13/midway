@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"midway/server/internal/game"
+	"midway/server/internal/room"
 )
 
 // TestTwoPlayersPlayAFullBattleshipMatch drives a complete match between two
@@ -20,8 +21,8 @@ import (
 // The test is agnostic about which connection joined first: the turn order is
 // decided by the server, so the roles are read from the snapshots.
 func TestTwoPlayersPlayAFullBattleshipMatch(t *testing.T) {
-	g := game.New(10, 10)
-	hub := NewHub(g)
+	registry := room.NewRegistry(10, 10)
+	hub := NewHub(registry)
 	defer hub.Stop()
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.ServeWS))
@@ -46,10 +47,13 @@ func TestTwoPlayersPlayAFullBattleshipMatch(t *testing.T) {
 		}
 	}
 
-	send(first, ClientMessage{Type: TypeJoin, Name: "Ana"})
-	send(second, ClientMessage{Type: TypeJoin, Name: "Beto"})
-	firstID := readMessage(t, first, TypeWelcome).PlayerID
-	secondID := readMessage(t, second, TypeWelcome).PlayerID
+	send(first, ClientMessage{Type: TypeCreate, Name: "Ana"})
+	w1 := readMessage(t, first, TypeWelcome)
+	roomCode := w1.Room
+	send(second, ClientMessage{Type: TypeJoin, Name: "Beto", Room: roomCode, Key: w1.Key})
+	w2 := readMessage(t, second, TypeWelcome)
+	firstID := w1.PlayerID
+	secondID := w2.PlayerID
 
 	// Both players place the same fleet layout in secret.
 	fleet := []struct {

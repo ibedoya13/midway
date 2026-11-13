@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"midway/server/internal/game"
+	"midway/server/internal/room"
 	"midway/server/internal/ws"
 )
 
@@ -16,8 +16,8 @@ func main() {
 	port := envOrDefault("PORT", "8080")
 	boardSize := envIntOrDefault("BOARD_SIZE", 10)
 
-	g := game.New(boardSize, boardSize)
-	hub := ws.NewHub(g)
+	registry := room.NewRegistry(boardSize, boardSize)
+	hub := ws.NewHub(registry)
 	defer hub.Stop()
 
 	mux := http.NewServeMux()
@@ -34,7 +34,8 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("midway server listening on :%s (board %dx%d)", port, boardSize, boardSize)
+	log.Printf("midway server listening on :%s (board %dx%d, up to %d rooms)",
+		port, boardSize, boardSize, room.MaxRooms)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}

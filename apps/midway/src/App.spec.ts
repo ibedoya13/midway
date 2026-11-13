@@ -7,7 +7,7 @@ import type { Snapshot } from './game/types'
 
 const h = vi.hoisted(() => {
   const stateCallbacks: ((state: Snapshot) => void)[] = []
-  const welcomeCallbacks: ((id: string, room: string) => void)[] = []
+  const welcomeCallbacks: ((id: string, room: string, key?: string) => void)[] = []
   const errorCallbacks: ((message: string) => void)[] = []
   const closeCallbacks: (() => void)[] = []
   const sent: Record<string, unknown>[] = []
@@ -15,6 +15,15 @@ const h = vi.hoisted(() => {
   class FakeClient {
     connect = vi.fn((name?: string) => {
       sent.push({ type: 'connect', name })
+    })
+    createRoom = vi.fn((name?: string) => {
+      sent.push({ type: 'create', name })
+    })
+    joinRoom = vi.fn((name: string | undefined, room: string, key: string) => {
+      sent.push({ type: 'join', name, room, key })
+    })
+    leaveRoom = vi.fn(() => {
+      sent.push({ type: 'leave' })
     })
     disconnect = vi.fn()
     place = vi.fn((kind: string, x: number, y: number, orientation: string) => {
@@ -39,7 +48,7 @@ const h = vi.hoisted(() => {
     onError = vi.fn((cb: (message: string) => void) => {
       errorCallbacks.push(cb)
     })
-    onWelcome = vi.fn((cb: (id: string, room: string) => void) => {
+    onWelcome = vi.fn((cb: (id: string, room: string, key?: string) => void) => {
       welcomeCallbacks.push(cb)
     })
     onClose = vi.fn((cb: () => void) => {
@@ -124,11 +133,93 @@ describe('App', () => {
     expect(wrapper.find('canvas').exists()).toBe(false)
   })
 
-  it('connects with the typed name', async () => {
+  it('opens the websocket connection on mount', () => {
+    mountApp()
+    expect(h.sent).toContainEqual({ type: 'connect', name: undefined })
+  })
+
+  it('offers the two ways to enter a room', async () => {
+    const wrapper = mountApp()
+    expect(wrapper.find('[data-create]').exists()).toBe(true)
+    expect(wrapper.find('[data-join-room]').exists()).toBe(true)
+  })
+
+  it('creates a room with the typed name', async () => {
     const wrapper = mountApp()
     await wrapper.find('[data-name]').setValue('Ana')
-    await wrapper.find('[data-enter]').trigger('submit')
-    expect(h.sent).toContainEqual({ type: 'connect', name: 'Ana' })
+    await wrapper.find('[data-create]').trigger('submit')
+    expect(h.sent).toContainEqual({ type: 'create', name: 'Ana' })
+  })
+
+  it('joins an existing room with its code and its key', async () => {
+    const wrapper = mountApp()
+    await wrapper.find('[data-name]').setValue('Beto')
+    await wrapper.find('[data-room-code]').setValue('123456')
+    await wrapper.find('[data-room-key]').setValue('a'.repeat(32))
+    await wrapper.find('[data-join-room]').trigger('submit')
+    expect(h.sent).toContainEqual({
+      type: 'join',
+      name: 'Beto',
+      room: '123456',
+      key: 'a'.repeat(32),
+    })
+  })
+
+  it('does not send a join without a valid key', async () => {
+    const wrapper = mountApp()
+    await wrapper.find('[data-name]').setValue('Beto')
+    await wrapper.find('[data-room-code]').setValue('123456')
+    await wrapper.find('[data-join-room]').trigger('submit')
+    expect(h.sent.filter((m) => m.type === 'join')).toHaveLength(0)
+    expect(wrapper.find('[data-error]').text()).toContain('clave')
+  })
+
+  it('does not send a join with a malformed code', async () => {
+    const wrapper = mountApp()
+    await wrapper.find('[data-name]').setValue('Beto')
+    await wrapper.find('[data-room-code]').setValue('12')
+    await wrapper.find('[data-join-room]').trigger('submit')
+    expect(h.sent.filter((m) => m.type === 'join')).toHaveLength(0)
+    expect(wrapper.find('[data-error]').text()).toContain('seis dígitos')
+  })
+
+  it('shows the room code and the invite link once in a room', async () => {
+    const wrapper = mountApp()
+    h.welcomeCallbacks.forEach((cb) => cb('p1', '123456', 'a'.repeat(32)))
+    h.stateCallbacks.forEach((cb) => cb(snapshot()))
+    await flushPromises()
+
+    expect(wrapper.find('[data-room-code-display]').text()).toContain('123456')
+    expect(wrapper.find('[data-invite-link]').text()).toContain('room=123456')
+    expect(wrapper.find('[data-invite-link]').text()).toContain(`key=${'a'.repeat(32)}`)
+  })
+
+  it('keeps the invite link for a player that joined with a key', async () => {
+    const wrapper = mountApp()
+    await wrapper.find('[data-name]').setValue('Beto')
+    await wrapper.find('[data-room-code]').setValue('123456')
+    await wrapper.find('[data-room-key]').setValue('a'.repeat(32))
+    await wrapper.find('[data-join-room]').trigger('submit')
+    // The welcome of a player that joined carries no key: the one it used
+    // has to be kept.
+    h.welcomeCallbacks.forEach((cb) => cb('p1', '123456'))
+    h.stateCallbacks.forEach((cb) => cb(snapshot()))
+    await flushPromises()
+
+    expect(wrapper.find('[data-invite-link]').text()).toContain(`key=${'a'.repeat(32)}`)
+  })
+
+  it('goes back to the lobby when leaving the room', async () => {
+    const wrapper = mountApp()
+    h.welcomeCallbacks.forEach((cb) => cb('p1', '123456'))
+    h.stateCallbacks.forEach((cb) => cb(snapshot()))
+    await flushPromises()
+
+    await wrapper.find('[data-leave]').trigger('click')
+    await flushPromises()
+
+    expect(h.sent).toContainEqual({ type: 'leave' })
+    expect(wrapper.find('[data-join]').exists()).toBe(true)
   })
 
   it('shows an error message from the server', async () => {

@@ -6,6 +6,12 @@ import FleetPanel from './components/FleetPanel.vue'
 import HudPanel from './components/HudPanel.vue'
 import { GameClient } from './game/client'
 import { COLUMN_LABELS } from './game/board'
+import {
+  buildInviteLink,
+  isValidRoomCode,
+  isValidRoomKey,
+  roomParamsFromUrl,
+} from './game/room'
 import { resolveWebSocketUrl } from './game/url'
 import type { Orientation, ShipKind, Snapshot } from './game/types'
 
@@ -20,8 +26,15 @@ const client = new GameClient(WS_URL)
 
 const snapshot = ref<Snapshot | null>(null)
 const playerId = ref('')
+// The room code of the match the player joined.
 const room = ref('')
 const playerName = ref('')
+// The code typed to join an existing room.
+const roomCodeInput = ref(roomParamsFromUrl(window.location.href).code)
+// The secret key of the room, read from the invite link.
+const roomKeyInput = ref(roomParamsFromUrl(window.location.href).key)
+// The secret key of the room the player created, or the one it joined with.
+const roomKey = ref('')
 const error = ref('')
 const orientation = ref<Orientation>('horizontal')
 const selectedKind = ref<ShipKind | null>(null)
@@ -72,9 +85,55 @@ const enemyColor = computed(
     players.value.find((player) => player.id !== playerId.value)?.color ?? '#4f8ef7',
 )
 
-function connect(): void {
+/** createRoom asks the server for a new room. */
+function createRoom(): void {
   error.value = ''
-  client.connect(playerName.value.trim() || undefined)
+  client.createRoom(playerName.value.trim() || undefined)
+}
+
+/** joinRoom enters an existing room with its six-digit code and its
+ * secret key. */
+function joinRoom(): void {
+  const code = roomCodeInput.value.trim()
+  const key = roomKeyInput.value.trim()
+  if (!isValidRoomCode(code)) {
+    error.value = 'El código de sala debe tener seis dígitos.'
+    return
+  }
+  if (!isValidRoomKey(key)) {
+    error.value = 'La clave de sala no es válida. Abre el enlace de invitación.'
+    return
+  }
+  error.value = ''
+  // The key is kept so the player can share the invite link again.
+  roomKey.value = key
+  client.joinRoom(playerName.value.trim() || undefined, code, key)
+}
+
+/** leaveRoom returns to the lobby. */
+function leaveRoom(): void {
+  client.leaveRoom()
+  snapshot.value = null
+  playerId.value = ''
+  room.value = ''
+  selectedKind.value = null
+}
+
+/** inviteLink is the URL the opponent can use to join the room. It carries
+ * the code and the secret key, so sharing the link is enough. */
+const inviteLink = computed(() =>
+  room.value && roomKey.value
+    ? buildInviteLink(window.location.origin, room.value, roomKey.value)
+    : '',
+)
+
+/** copyInvite copies the invite link to the clipboard. */
+async function copyInvite(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(inviteLink.value)
+  } catch {
+    error.value = 'No se pudo copiar. Copia el enlace a mano.'
+  }
 }
 
 function placeShip(x: number, y: number): void {
@@ -153,9 +212,18 @@ function restart(): void {
 }
 
 onMounted(() => {
-  client.onWelcome((id, joinedRoom) => {
+  // The socket is opened once: creating or joining a room only sends a
+  // message over the existing connection.
+  client.connect()
+  client.onWelcome((id, joinedRoom, key) => {
     playerId.value = id
+    // The room field carries the six-digit code of the room.
     room.value = joinedRoom
+    // The server only sends the key to the player that created the room. The
+    // player that joined already knows it, so the existing value is kept.
+    if (key) {
+      roomKey.value = key
+    }
   })
   client.onState((state) => {
     snapshot.value = state
@@ -184,21 +252,67 @@ onBeforeUnmount(() => {
 
     <section v-if="!connected" class="app__join" data-join>
       <h2 class="app__join-title">Entra a la partida</h2>
-      <form class="app__join-form" @submit.prevent="connect">
-        <input
-          v-model="playerName"
-          class="app__input"
-          type="text"
-          placeholder="Tu nombre"
-          maxlength="16"
-          data-name
-        />
-        <button class="app__button" type="submit" data-enter>Entrar</button>
+
+      <input
+        v-model="playerName"
+        class="app__input"
+        type="text"
+        placeholder="Tu nombre"
+        maxlength="16"
+        data-name
+      />
+
+      <form class="app__join-form" @submit.prevent="createRoom">
+        <button class="app__button" type="submit" data-create>Crear sala</button>
       </form>
-      <p class="app__hint">Necesitas un rival conectado para empezar.</p>
+
+      <p class="app__join-separator">o</p>
+
+      <form class="app__join-form" @submit.prevent="joinRoom">
+        <input
+          v-model="roomCodeInput"
+          class="app__input app__input--code"
+          type="text"
+          inputmode="numeric"
+          maxlength="6"
+          placeholder="Código"
+          data-room-code
+        />
+        <input
+          v-model="roomKeyInput"
+          class="app__input app__input--key"
+          type="text"
+          autocomplete="off"
+          maxlength="32"
+          placeholder="Clave"
+          data-room-key
+        />
+        <button class="app__button app__button--ghost" type="submit" data-join-room>
+          Unirse
+        </button>
+      </form>
+
+      <p class="app__hint">
+        Abre el enlace de invitación de tu rival, o escribe su código y su clave.
+      </p>
     </section>
 
     <template v-else-if="phase === 'setup'">
+      <div v-if="room" class="app__room" data-room>
+        <span class="app__room-label">Sala</span>
+        <strong class="app__room-code" data-room-code-display>{{ room }}</strong>
+        <code class="app__room-link" data-invite-link>{{ inviteLink }}</code>
+        <span v-if="!roomKey" class="app__room-hint">
+          Comparte el enlace para que tu rival entre.
+        </span>
+        <button class="app__button app__button--ghost" type="button" @click="copyInvite">
+          Copiar enlace
+        </button>
+        <button class="app__button app__button--ghost" type="button" data-leave @click="leaveRoom">
+          Salir
+        </button>
+      </div>
+
       <div class="app__layout">
         <div class="app__boards">
           <div class="app__board">
@@ -239,6 +353,21 @@ onBeforeUnmount(() => {
     </template>
 
     <template v-else-if="phase === 'playing'">
+      <div v-if="room" class="app__room" data-room>
+        <span class="app__room-label">Sala</span>
+        <strong class="app__room-code" data-room-code-display>{{ room }}</strong>
+        <code class="app__room-link" data-invite-link>{{ inviteLink }}</code>
+        <span v-if="!roomKey" class="app__room-hint">
+          Comparte el enlace para que tu rival entre.
+        </span>
+        <button class="app__button app__button--ghost" type="button" @click="copyInvite">
+          Copiar enlace
+        </button>
+        <button class="app__button app__button--ghost" type="button" data-leave @click="leaveRoom">
+          Salir
+        </button>
+      </div>
+
       <HudPanel
         :phase="phase"
         :players="players"
@@ -346,6 +475,64 @@ onBeforeUnmount(() => {
 .app__join-form {
   display: flex;
   gap: 0.5rem;
+  align-items: stretch;
+}
+
+.app__join-separator {
+  margin: 0;
+  color: var(--muted-foreground, #8b93a7);
+  font-size: 0.8rem;
+}
+
+.app__input--code {
+  width: 10ch;
+  text-align: center;
+  letter-spacing: 0.3em;
+  font-family: inherit;
+}
+
+.app__button--ghost {
+  background: transparent;
+  color: var(--foreground, #e6e9f2);
+}
+
+.app__room {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid #0c0e14;
+  background: var(--card, #202533);
+}
+
+.app__room-label {
+  color: var(--muted-foreground, #8b93a7);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+.app__room-code {
+  color: var(--accent, #ffd447);
+  font-size: 1.4rem;
+  letter-spacing: 0.3em;
+}
+
+.app__room-link {
+  color: var(--muted-foreground, #8b93a7);
+  font-size: 0.75rem;
+}
+
+.app__room-hint {
+  color: var(--muted-foreground, #8b93a7);
+  font-size: 0.75rem;
+}
+
+.app__input--key {
+  width: 22ch;
+  font-size: 0.8rem;
 }
 
 .app__input {

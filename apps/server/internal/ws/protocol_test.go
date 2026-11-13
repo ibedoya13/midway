@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,12 +12,13 @@ import (
 	"github.com/gorilla/websocket"
 
 	"midway/server/internal/game"
+	"midway/server/internal/room"
 )
 
 // testServer is a hub running behind an httptest server.
 type testServer struct {
-	game *game.Game
-	url  string
+	rooms *room.Registry
+	url   string
 }
 
 // dial opens a new client connection to the server.
@@ -34,14 +36,14 @@ func (s *testServer) dial(t *testing.T) *websocket.Conn {
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 
-	g := game.New(10, 10)
-	hub := NewHub(g)
+	registry := room.NewRegistry(10, 10)
+	hub := NewHub(registry)
 	t.Cleanup(hub.Stop)
 
 	srv := httptest.NewServer(http.HandlerFunc(hub.ServeWS))
 	t.Cleanup(srv.Close)
 
-	return &testServer{game: g, url: "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}
+	return &testServer{rooms: registry, url: "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}
 }
 
 // readMessage reads the next JSON message of the expected type.
@@ -57,6 +59,16 @@ func readMessage(t *testing.T, conn *websocket.Conn, wantType string) ServerMess
 			return msg
 		}
 	}
+}
+
+// createRoom makes a room and returns its six-digit code and its secret key.
+func createRoom(t *testing.T, conn *websocket.Conn, name string) (string, string) {
+	t.Helper()
+	if err := conn.WriteJSON(ClientMessage{Type: TypeCreate, Name: name}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	msg := readMessage(t, conn, TypeWelcome)
+	return msg.Room, msg.Key
 }
 
 // readState reads the next state snapshot.
@@ -94,11 +106,11 @@ func placeFleet(t *testing.T, conn *websocket.Conn) {
 	}
 }
 
-func TestJoinReturnsWelcomeWithPlayerID(t *testing.T) {
+func TestCreateReturnsWelcomeWithPlayerID(t *testing.T) {
 	srv := newTestServer(t)
 	conn := srv.dial(t)
 
-	if err := conn.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Ana"}); err != nil {
+	if err := conn.WriteJSON(ClientMessage{Type: TypeCreate, Name: "Ana"}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -106,8 +118,8 @@ func TestJoinReturnsWelcomeWithPlayerID(t *testing.T) {
 	if msg.PlayerID == "" {
 		t.Fatal("welcome has empty playerId")
 	}
-	if msg.Room == "" {
-		t.Fatal("welcome has empty room")
+	if !room.IsValidCode(msg.Room) {
+		t.Fatalf("room = %q, want a six-digit code", msg.Room)
 	}
 }
 
@@ -143,11 +155,10 @@ func TestThirdPlayerIsRejected(t *testing.T) {
 	srv := newTestServer(t)
 
 	c1, c2, c3 := srv.dial(t), srv.dial(t), srv.dial(t)
-	c1.WriteJSON(ClientMessage{Type: TypeJoin, Name: "A"})
-	readMessage(t, c1, TypeWelcome)
-	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "B"})
+	code, key := createRoom(t, c1, "A")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "B", Room: code, Key: key})
 	readMessage(t, c2, TypeWelcome)
-	c3.WriteJSON(ClientMessage{Type: TypeJoin, Name: "C"})
+	c3.WriteJSON(ClientMessage{Type: TypeJoin, Name: "C", Room: code, Key: key})
 
 	msg := readMessage(t, c3, TypeError)
 	if msg.Message == "" {
@@ -159,8 +170,7 @@ func TestPlaceShipIsReflectedInTheState(t *testing.T) {
 	srv := newTestServer(t)
 	conn := srv.dial(t)
 
-	conn.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Ana"})
-	readMessage(t, conn, TypeWelcome)
+	createRoom(t, conn, "Ana")
 
 	conn.WriteJSON(ClientMessage{
 		Type: TypePlace, Kind: string(game.Cruiser), X: 2, Y: 3, Orientation: string(game.Horizontal),
@@ -179,8 +189,7 @@ func TestInvalidPlacementReturnsError(t *testing.T) {
 	srv := newTestServer(t)
 	conn := srv.dial(t)
 
-	conn.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Ana"})
-	readMessage(t, conn, TypeWelcome)
+	createRoom(t, conn, "Ana")
 
 	// A carrier of 5 does not fit starting at column 7.
 	conn.WriteJSON(ClientMessage{
@@ -197,8 +206,7 @@ func TestStateMessageIsBroadcastToJoinedPlayers(t *testing.T) {
 	srv := newTestServer(t)
 	conn := srv.dial(t)
 
-	conn.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Ana"})
-	readMessage(t, conn, TypeWelcome)
+	createRoom(t, conn, "Ana")
 
 	snap := readState(t, conn)
 	if len(snap.Players) != 1 {
@@ -213,9 +221,8 @@ func TestStartReturnsTheMatchToSetup(t *testing.T) {
 	srv := newTestServer(t)
 	c1, c2 := srv.dial(t), srv.dial(t)
 
-	c1.WriteJSON(ClientMessage{Type: TypeJoin, Name: "A"})
-	readMessage(t, c1, TypeWelcome)
-	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "B"})
+	code, key := createRoom(t, c1, "A")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "B", Room: code, Key: key})
 	readMessage(t, c2, TypeWelcome)
 
 	placeFleet(t, c1)
@@ -241,6 +248,223 @@ func TestStartReturnsTheMatchToSetup(t *testing.T) {
 		}
 	}
 	t.Fatal("match never returned to setup")
+}
+
+// TestJoinWithTheSecretKeyIsAccepted checks that the room key is the
+// credential that admits a player.
+func TestJoinWithTheSecretKeyIsAccepted(t *testing.T) {
+	srv := newTestServer(t)
+	c1, c2 := srv.dial(t), srv.dial(t)
+
+	code, key := createRoom(t, c1, "Ana")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code, Key: key})
+	readMessage(t, c2, TypeWelcome)
+}
+
+// TestJoinWithoutTheSecretKeyIsRejected checks that the six-digit code alone
+// does not admit a player: the secret key is required.
+func TestJoinWithoutTheSecretKeyIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	c1, c2 := srv.dial(t), srv.dial(t)
+
+	code, _ := createRoom(t, c1, "Ana")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code})
+
+	msg := readMessage(t, c2, TypeError)
+	if msg.Message == "" {
+		t.Fatal("joining without the secret key must fail")
+	}
+}
+
+// TestJoinWithAWrongSecretKeyIsRejected checks that a wrong key is refused.
+func TestJoinWithAWrongSecretKeyIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	c1, c2 := srv.dial(t), srv.dial(t)
+
+	code, _ := createRoom(t, c1, "Ana")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code, Key: "clave-incorrecta"})
+
+	msg := readMessage(t, c2, TypeError)
+	if msg.Message == "" {
+		t.Fatal("joining with a wrong secret key must fail")
+	}
+}
+
+// TestTheKeyOfAnotherRoomIsRejected checks that the key of a room does not
+// open a different room.
+func TestTheKeyOfAnotherRoomIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	c1, c2, c3 := srv.dial(t), srv.dial(t), srv.dial(t)
+
+	_, keyA := createRoom(t, c1, "Ana")
+	codeB, _ := createRoom(t, c2, "Beto")
+
+	c3.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Caro", Room: codeB, Key: keyA})
+	readMessage(t, c3, TypeError)
+}
+
+// TestCreateReturnsTheSecretKey checks that the creator receives the key it
+// has to share with the opponent.
+func TestCreateReturnsTheSecretKey(t *testing.T) {
+	srv := newTestServer(t)
+	conn := srv.dial(t)
+
+	if err := conn.WriteJSON(ClientMessage{Type: TypeCreate, Name: "Ana"}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	msg := readMessage(t, conn, TypeWelcome)
+	if msg.Key == "" {
+		t.Fatal("the welcome has no secret key")
+	}
+	if len(msg.Key) != room.KeyLength {
+		t.Fatalf("key length = %d, want %d", len(msg.Key), room.KeyLength)
+	}
+}
+
+func TestJoinWithAnUnknownCodeIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	conn := srv.dial(t)
+
+	conn.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: "000000"})
+
+	msg := readMessage(t, conn, TypeError)
+	if msg.Message == "" {
+		t.Fatal("joining an unknown room must fail")
+	}
+}
+
+func TestJoinWithoutACodeIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	conn := srv.dial(t)
+
+	conn.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto"})
+
+	readMessage(t, conn, TypeError)
+}
+
+func TestJoinWithAMalformedCodeIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	conn := srv.dial(t)
+
+	conn.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: "abc"})
+
+	readMessage(t, conn, TypeError)
+}
+
+func TestSecondPlayerJoinsTheSameRoom(t *testing.T) {
+	srv := newTestServer(t)
+	c1, c2 := srv.dial(t), srv.dial(t)
+
+	code, key := createRoom(t, c1, "Ana")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code, Key: key})
+	w2 := readMessage(t, c2, TypeWelcome)
+
+	if w2.Room != code {
+		t.Fatalf("room = %q, want %q", w2.Room, code)
+	}
+}
+
+// TestJoinToARoomThatAlreadyStartedIsRejected covers the rule that nobody
+// can enter a match that is already in progress.
+func TestJoinToARoomThatAlreadyStartedIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	c1, c2, c3 := srv.dial(t), srv.dial(t), srv.dial(t)
+
+	code, key := createRoom(t, c1, "Ana")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code, Key: key})
+	readMessage(t, c2, TypeWelcome)
+
+	placeFleet(t, c1)
+	placeFleet(t, c2)
+
+	deadline := time.Now().Add(3 * time.Second)
+	started := false
+	for time.Now().Before(deadline) && !started {
+		snap := readState(t, c1)
+		started = snap.Phase == game.PhasePlaying
+	}
+	if !started {
+		t.Fatal("match never started")
+	}
+
+	// A third player cannot enter a match that is already running.
+	c3.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Caro", Room: code, Key: key})
+
+	msg := readMessage(t, c3, TypeError)
+	if msg.Message == "" {
+		t.Fatal("joining a room with a match in progress must fail")
+	}
+}
+
+func TestLeaveReleasesTheRoom(t *testing.T) {
+	srv := newTestServer(t)
+	c1, c2 := srv.dial(t), srv.dial(t)
+
+	code, key := createRoom(t, c1, "Ana")
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code, Key: key})
+	readMessage(t, c2, TypeWelcome)
+
+	c1.WriteJSON(ClientMessage{Type: TypeLeave})
+	readMessage(t, c1, TypeLeft)
+
+	// The room still exists with one player, so a new opponent can enter.
+	c3 := srv.dial(t)
+	c3.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Caro", Room: code, Key: key})
+	readMessage(t, c3, TypeWelcome)
+}
+
+func TestEmptyRoomIsDeleted(t *testing.T) {
+	srv := newTestServer(t)
+	c1 := srv.dial(t)
+
+	code, key := createRoom(t, c1, "Ana")
+
+	c1.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	c2 := srv.dial(t)
+	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code, Key: key})
+	readMessage(t, c2, TypeError) // the room no longer exists
+}
+
+// TestRoomLimitIsEnforced covers the limit of simultaneous rooms.
+func TestRoomLimitIsEnforced(t *testing.T) {
+	srv := newTestServer(t)
+
+	for i := 0; i < room.MaxRooms; i++ {
+		conn := srv.dial(t)
+		createRoom(t, conn, fmt.Sprintf("P%d", i))
+	}
+
+	conn := srv.dial(t)
+	conn.WriteJSON(ClientMessage{Type: TypeCreate, Name: "Extra"})
+
+	msg := readMessage(t, conn, TypeError)
+	if msg.Message == "" {
+		t.Fatal("creating a room over the limit must fail")
+	}
+}
+
+// TestTheLimitFreesRoomsWhenTheyAreEmpty checks that a room that is left
+// empty does not consume one of the ten slots forever.
+func TestTheLimitFreesRoomsWhenTheyAreEmpty(t *testing.T) {
+	srv := newTestServer(t)
+
+	var conns []*websocket.Conn
+	for i := 0; i < room.MaxRooms; i++ {
+		conn := srv.dial(t)
+		createRoom(t, conn, fmt.Sprintf("P%d", i))
+		conns = append(conns, conn)
+	}
+
+	// Free one slot by closing its only player.
+	conns[0].Close()
+	time.Sleep(300 * time.Millisecond)
+
+	fresh := srv.dial(t)
+	fresh.WriteJSON(ClientMessage{Type: TypeCreate, Name: "Nuevo"})
+	readMessage(t, fresh, TypeWelcome)
 }
 
 func TestDecodeClientMessage(t *testing.T) {
