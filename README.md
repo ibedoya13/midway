@@ -255,9 +255,15 @@ leer el config y el deploy falla con `Cannot find package '@cloudflare/config'`.
   legible; la clave de 32 hex es lo que deja entrar. Un id desconocido recibe
   un snapshot vacío, nunca el tablero de un jugador real.
 - **Cabeceras del SPA.** `apps/midway/public/_headers` define la CSP (con
-  `connect-src` apuntando al backend), `nosniff`, `X-Frame-Options`,
-  `Referrer-Policy`, `Permissions-Policy` y HSTS. Vite lo copia a `dist/` y
-  Cloudflare lo sirve.
+  `connect-src` apuntando al backend **solo por `wss://`**), `nosniff`,
+  `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, HSTS y
+  `Cross-Origin-Resource-Policy`. Vite lo copia a `dist/` y Cloudflare lo
+  sirve. El dev server de Vite no aplica este archivo, así que el modo LAN
+  sigue funcionando sin `ws://` en la CSP.
+- **El nombre del jugador lo limita el servidor**, no solo el navegador. El
+  frontend usa `maxlength=16`, pero un cliente WebSocket directo no pasa por
+  ahí: un nombre enorme se difunde en cada snapshot (20 por segundo). El
+  servidor lo recorta a 16 caracteres y le quita los caracteres de control.
 - **Reconexión.** Cloud Run cierra las WebSocket a los 60 minutos, así que el
   cliente reconecta solo: hasta 8 intentos con espera creciente (1 s a 15 s).
   Cada jugador recibe un **token de reanudación** que conserva en el servidor:

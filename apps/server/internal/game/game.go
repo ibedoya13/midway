@@ -137,6 +137,12 @@ func (g *Game) Player(id string) *Player {
 	return g.players[id]
 }
 
+// MaxNameLength is the number of characters of a player name. The name is
+// sent in every snapshot, so an unbounded one would be broadcast over and
+// over. The frontend limits it too, but a direct WebSocket client does not
+// go through it.
+const MaxNameLength = 16
+
 // AddPlayer joins a player to the match. It returns false when the match
 // already has two players.
 func (g *Game) AddPlayer(id, name string) (*Player, bool) {
@@ -146,6 +152,7 @@ func (g *Game) AddPlayer(id, name string) (*Player, bool) {
 	if len(g.players) >= 2 {
 		return nil, false
 	}
+	name = SanitizeName(name, len(g.players)+1)
 	if name == "" {
 		name = "Jugador " + strconv.Itoa(len(g.players)+1)
 	}
@@ -202,6 +209,27 @@ func (g *Game) ResumePlayer(token string) (*Player, bool) {
 		return p, true
 	}
 	return nil, false
+}
+
+// SanitizeName trims a player name to the allowed length and removes the
+// control characters. It returns an empty string when there is nothing
+// usable left.
+func SanitizeName(name string, fallback int) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(name))
+
+	runes := []rune(cleaned)
+	if len(runes) > MaxNameLength {
+		runes = runes[:MaxNameLength]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 // randomToken returns a random token to resume a match.

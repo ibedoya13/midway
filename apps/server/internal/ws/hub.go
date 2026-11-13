@@ -346,9 +346,9 @@ func (c *client) readPump() {
 func (c *client) handle(msg ClientMessage) {
 	switch msg.Type {
 	case TypeCreate:
-		c.createRoom(msg.Name)
+		c.createRoom(game.SanitizeName(msg.Name, 1))
 	case TypeJoin:
-		c.joinRoom(msg.Name, msg.Room, msg.Key, msg.ResumeToken)
+		c.joinRoom(game.SanitizeName(msg.Name, 2), msg.Room, msg.Key, msg.ResumeToken)
 	case TypeLeave:
 		c.leaveRoom()
 		c.sendJSON(ServerMessage{Type: TypeLeft})
