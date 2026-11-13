@@ -1,7 +1,7 @@
 GO ?= go
 NPM ?= npm
 SERVER_DIR := apps/server
-WEB_DIR := apps/web
+WEB_DIR := apps/midway
 
 .PHONY: help install dev dev-server dev-web test test-server test-web build build-server build-web lint typecheck clean
 

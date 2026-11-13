@@ -1,5 +1,5 @@
 {
-  "name": "@midway/web",
+  "name": "midway",
   "private": true,
   "version": "0.1.0",
   "type": "module",

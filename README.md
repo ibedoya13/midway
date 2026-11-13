@@ -100,6 +100,59 @@ make test        # go test ./... + vitest
 make build       # binario Go + build de producción del frontend
 ```
 
+## Despliegue
+
+El backend vive en **Cloud Run (GCP)** y el frontend en **Cloudflare Pages**.
+El estado de la partida está en memoria, así que el backend corre con una sola
+instancia (`--min-instances=1 --max-instances=1`) y afinidad de sesión: los dos
+jugadores deben caer en la misma instancia.
+
+### Backend → Cloud Run
+
+```bash
+export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+
+# Una sola vez: habilitar APIs y crear el repositorio de imágenes
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com --project=amarrete
+gcloud artifacts repositories create midway \
+  --repository-format=docker --location=us-central1 --project=amarrete
+
+# Desplegar (el build ocurre en la nube, no hace falta Docker local)
+cd apps/server
+gcloud run deploy midway --source . \
+  --image=us-central1-docker.pkg.dev/amarrete/midway/midway:v1 \
+  --project=amarrete --region=us-central1 \
+  --platform=managed --allow-unauthenticated \
+  --min-instances=1 --max-instances=1 --session-affinity --port=8080
+```
+
+El servicio queda en `https://midway-463140756941.us-central1.run.app`
+(compruébalo con `curl https://<servicio>/health`).
+
+### Frontend → Cloudflare Pages
+
+La URL del WebSocket se embebe en el bundle en tiempo de build, así que el
+frontend se construye **después** de desplegar el backend:
+
+```bash
+VITE_WS_URL="wss://midway-463140756941.us-central1.run.app/ws" \
+  npm --workspace apps/web run build
+
+cf deploy apps/web/dist
+```
+
+Queda en `https://midway.amarrete.workers.dev`. La configuración del proyecto
+está en `wrangler.toml`.
+
+### Notas
+- El backend acepta cualquier `Origin` en el handshake WebSocket, necesario
+  porque el frontend se sirve desde un dominio distinto al del backend.
+- Cloud Run corta las conexiones WebSocket tras 60 minutos (límite de la
+  plataforma); una partida más larga que eso se reconecta.
+- `--min-instances=1` mantiene una instancia encendida, así que el servicio
+  responde al instante y las partidas no se pierden al escalar a cero.
+
 ## Variables de entorno
 
 | Variable | Default | Descripción |

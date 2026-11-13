@@ -1,0 +1,10 @@
+# Build artifacts
+bin/
+dist/
+*.test
+coverage.out
+
+# Local tooling
+.DS_Store
+.idea/
+.vscode/

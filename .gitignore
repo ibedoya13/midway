@@ -6,6 +6,10 @@ dist/
 bin/
 *.tsbuildinfo
 
+# Cloudflare build artifacts
+.cloudflare/
+.wrangler/
+
 # Go
 *.test
 coverage.out

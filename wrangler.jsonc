@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "midway",
+  "compatibility_date": "2026-11-13",
+  "preview_urls": false,
+  "assets": {
+    "directory": "./apps/web/dist",
+    "not_found_handling": "single-page-application"
+  },
+  "domains": [
+    {
+      "hostname": "midway.amarrete.com",
+      "production": true,
+      "previews": false
+    }
+  ]
+}
