@@ -174,10 +174,17 @@ frontend se construye **después** de desplegar el backend:
 
 ```bash
 VITE_WS_URL="wss://midway-akeen4rlgq-uc.a.run.app/ws" \
-  npm --workspace apps/midway run build
+  npm --workspace apps/midway run build:prod
 
 cd apps/midway && cf deploy dist
 ```
+
+Usa `build:prod` y no `build`: la URL del WebSocket queda incrustada en el
+bundle, así que un build hecho sin `VITE_WS_URL` produce un cliente que no
+llega al servidor. `build:prod` comprueba el bundle después de construirlo y
+falla si la URL no es la esperada. **Un `npm run build` a secas sobrescribe
+`dist/` con un bundle inservible** (se queda apuntando a la red local), así que
+si se usa, hay que reconstruir con la variable antes de desplegar.
 
 Queda en **https://midway.amarrete.com** (dominio propio en la zona
 `amarrete.com`) y también en `https://midway.amarrete.workers.dev`.
@@ -227,6 +234,56 @@ leer el config y el deploy falla con `Cannot find package '@cloudflare/config'`.
 | `PORT` | `8080` | Puerto del backend |
 | `BOARD_SIZE` | `10` | Lado del tablero (columnas y filas) |
 | `VITE_WS_URL` | *(derivada del host de la página)* | URL del WebSocket (frontend). Si no se define, se calcula como `ws://<host-de-la-página>:8080/ws`, lo que permite jugar en la red local sin configurarla. |
+| `ALLOWED_ORIGINS` | `https://midway.amarrete.com,http://localhost:5173,http://127.0.0.1:5173` | Lista separada por comas de los orígenes que pueden abrir un WebSocket. Un origen ajeno recibe **403** antes del handshake. Los orígenes de IP privada en los puertos 5173/4173 se permiten siempre, para jugar en la red local. |
+| `ALLOW_EMPTY_ORIGIN` | `true` | Si los clientes sin cabecera `Origin` (sondas, scripts, health checks) pueden conectar. |
+| `MAX_CONNECTIONS_PER_IP` | `20` | Conexiones simultáneas por dirección. Una IP es toda una casa u oficina detrás del mismo router. |
+| `MAX_CONNECTIONS` | `100` | Conexiones simultáneas en total. |
+| `MESSAGES_PER_SECOND` | `20` | Mensajes por segundo y socket. Al superarlo, el servidor cierra esa conexión. |
+| `RECONNECT_GRACE_SECONDS` | `300` | Tiempo que un jugador conserva su asiento tras perder la conexión. Pasado ese plazo, la plaza se libera. |
+
+### Seguridad
+
+- **Origen restringido.** `ServeWS` valida el `Origin` antes del upgrade: un
+  sitio ajeno recibe `403` en lugar de un socket que podría usar para ocupar
+  salas o inundar el servidor.
+- **Límites de ritmo.** Un token bucket por socket y un límite de conexiones
+  por IP. La instancia está fijada a 1 porque el estado vive en memoria, así
+  que agotarla tumbaría el juego de todos.
+- **La clave de sala es la credencial.** El código de 6 dígitos es público y
+  legible; la clave de 32 hex es lo que deja entrar. Un id desconocido recibe
+  un snapshot vacío, nunca el tablero de un jugador real.
+- **Cabeceras del SPA.** `apps/midway/public/_headers` define la CSP (con
+  `connect-src` apuntando al backend), `nosniff`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy` y HSTS. Vite lo copia a `dist/` y
+  Cloudflare lo sirve.
+- **Reconexión.** Cloud Run cierra las WebSocket a los 60 minutos, así que el
+  cliente reconecta solo: hasta 8 intentos con espera creciente (1 s a 15 s).
+  Cada jugador recibe un **token de reanudación** que conserva en el servidor:
+  al volver toma su asiento con la misma flota y el mismo turno. El token solo
+  sirve para un jugador desconectado — el de alguien conectado se rechaza — y
+  nunca viaja en el estado broadcast. Si el jugador no vuelve en
+  `RECONNECT_GRACE_SECONDS`, su plaza se libera y la partida se reinicia.
+
+> **Nota al desplegar:** `gcloud` usa la coma como separador de sus
+> argumentos `key=value`, así que un valor con comas se rompe. Por eso
+> `ALLOWED_ORIGINS` acepta también `;` como separador:
+> `--update-env-vars "ALLOWED_ORIGINS=https://midway.amarrete.com;http://localhost:5173"`.
+
+### Verificación de la seguridad
+
+Las medidas se comprueban contra el **despliegue**, no contra el código. Las
+sondas viven fuera del repo (en el scratch) y hacen estas preguntas:
+
+| Sonda | Resultado esperado |
+| --- | --- |
+| `Origin: https://attacker.example` | `403 Forbidden` |
+| `Origin: https://midway.amarrete.com` | `101 Switching Protocols` |
+| `Origin: http://localhost:5173` | `101` (desarrollo local) |
+| Sin `Origin` | `101` (sondas y scripts) |
+| Conexiones desde una misma IP | `429` al superar `MAX_CONNECTIONS_PER_IP` |
+| Socket que inunda mensajes | el servidor lo cierra |
+| Socket que nunca se une | `0` frames de estado, aunque haya partida en curso |
+| `shoot` sin estar en una sala | error `debes entrar en una sala antes de jugar` |
 
 ## Protocolo WebSocket
 

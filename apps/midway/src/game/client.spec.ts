@@ -147,6 +147,79 @@ describe('GameClient', () => {
     ])
   })
 
+  it('keeps the resume token of the welcome', () => {
+    const client = new GameClient('ws://x', {
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    })
+    client.connect()
+    const socket = FakeSocket.instances[0]
+    socket.open()
+    socket.receive({
+      type: 'welcome',
+      playerId: 'p1',
+      room: '123456',
+      resumeToken: 'r'.repeat(32),
+    })
+
+    expect(client.resumeToken).toBe('r'.repeat(32))
+  })
+
+  it('reconnects and rejoins the room when the connection is lost', () => {
+    vi.useFakeTimers()
+    const client = new GameClient('ws://x', {
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    })
+    client.connect()
+    const socket = FakeSocket.instances[0]
+    socket.open()
+    socket.receive({
+      type: 'welcome',
+      playerId: 'p1',
+      room: '123456',
+      resumeToken: 'r'.repeat(32),
+    })
+    client.joinRoom('Ana', '123456', 'k'.repeat(32))
+
+    // The connection is lost.
+    socket.close()
+    vi.advanceTimersByTime(1000)
+
+    // A new socket is opened and the player rejoins with its token.
+    const reconnected = FakeSocket.instances[FakeSocket.instances.length - 1]
+    reconnected.open()
+    const sent = reconnected.parsed()
+    expect(sent.some((m) => m.type === 'join' && m.resumeToken === 'r'.repeat(32))).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('gives up after the maximum number of retries', () => {
+    vi.useFakeTimers()
+    const client = new GameClient('ws://x', {
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    })
+    client.connect()
+    const socket = FakeSocket.instances[0]
+    socket.open()
+    socket.receive({
+      type: 'welcome',
+      playerId: 'p1',
+      room: '123456',
+      resumeToken: 'r'.repeat(32),
+    })
+
+    for (let i = 0; i < 10; i++) {
+      const last = FakeSocket.instances[FakeSocket.instances.length - 1]
+      last.close()
+      vi.advanceTimersByTime(30000)
+    }
+
+    // No more sockets are opened after the limit.
+    const before = FakeSocket.instances.length
+    vi.advanceTimersByTime(60000)
+    expect(FakeSocket.instances.length).toBe(before)
+    vi.useRealTimers()
+  })
+
   it('dispatches state, error and welcome messages to their callbacks', () => {
     const client = new GameClient('ws://x', {
       socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
@@ -164,7 +237,7 @@ describe('GameClient', () => {
     socket.receive({ type: 'welcome', playerId: 'p1', room: '123456', key: 'a'.repeat(32) })
     socket.receive({ type: 'state', state: snapshot })
     socket.receive({ type: 'error', message: 'boom' })
-    expect(onWelcome).toHaveBeenCalledWith('p1', '123456', 'a'.repeat(32))
+    expect(onWelcome).toHaveBeenCalledWith('p1', '123456', 'a'.repeat(32), undefined)
     expect(onState).toHaveBeenCalledWith(snapshot)
     expect(onError).toHaveBeenCalledWith('boom')
   })

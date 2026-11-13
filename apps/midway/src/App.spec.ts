@@ -209,6 +209,20 @@ describe('App', () => {
     expect(wrapper.find('[data-invite-link]').text()).toContain(`key=${'a'.repeat(32)}`)
   })
 
+  it('warns when the opponent is disconnected', async () => {
+    const wrapper = mountApp()
+    h.welcomeCallbacks.forEach((cb) => cb('p1', '123456'))
+    const state = snapshot()
+    state.players = [
+      { id: 'p1', name: 'Ana', color: '#e94f6d', ready: true },
+      { id: 'p2', name: 'Beto', color: '#4f8ef7', ready: true, disconnected: true },
+    ]
+    h.stateCallbacks.forEach((cb) => cb(state))
+    await flushPromises()
+
+    expect(wrapper.find('[data-opponent-away]').exists()).toBe(true)
+  })
+
   it('goes back to the lobby when leaving the room', async () => {
     const wrapper = mountApp()
     h.welcomeCallbacks.forEach((cb) => cb('p1', '123456'))

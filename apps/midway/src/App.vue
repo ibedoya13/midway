@@ -35,6 +35,8 @@ const roomCodeInput = ref(roomParamsFromUrl(window.location.href).code)
 const roomKeyInput = ref(roomParamsFromUrl(window.location.href).key)
 // The secret key of the room the player created, or the one it joined with.
 const roomKey = ref('')
+// True while the client is trying to reconnect after losing the connection.
+const reconnecting = ref(false)
 const error = ref('')
 const orientation = ref<Orientation>('horizontal')
 const selectedKind = ref<ShipKind | null>(null)
@@ -118,6 +120,12 @@ function leaveRoom(): void {
   room.value = ''
   selectedKind.value = null
 }
+
+// opponentAway is true when the other player lost the connection.
+const opponentAway = computed(() => {
+  const players = snapshot.value?.players ?? []
+  return players.some((player) => player.disconnected)
+})
 
 /** inviteLink is the URL the opponent can use to join the room. It carries
  * the code and the secret key, so sharing the link is enough. */
@@ -217,6 +225,7 @@ onMounted(() => {
   client.connect()
   client.onWelcome((id, joinedRoom, key) => {
     playerId.value = id
+    reconnecting.value = false
     // The room field carries the six-digit code of the room.
     room.value = joinedRoom
     // The server only sends the key to the player that created the room. The
@@ -231,6 +240,10 @@ onMounted(() => {
   })
   client.onError((message) => {
     error.value = message
+  })
+  client.onClose(() => {
+    // The client reconnects on its own: the match is kept for a while.
+    reconnecting.value = true
   })
   window.addEventListener('keydown', onKeydown)
 })
@@ -247,6 +260,14 @@ onBeforeUnmount(() => {
       <h1 class="app__title">MIDWAY</h1>
       <p class="app__subtitle">Batalla Naval · 2 jugadores</p>
     </header>
+
+    <p v-if="reconnecting" class="app__notice" data-reconnecting>
+      Conexión perdida. Reconectando…
+    </p>
+
+    <p v-if="opponentAway" class="app__notice" data-opponent-away>
+      Tu rival se ha desconectado. La partida se conserva un rato.
+    </p>
 
     <p v-if="error" class="app__error" data-error>{{ error }}</p>
 
@@ -443,6 +464,16 @@ onBeforeUnmount(() => {
 .app__subtitle {
   margin: 0.25rem 0 0;
   color: #8b93a7;
+}
+
+.app__notice {
+  margin: 0 auto;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid #0c0e14;
+  background: #2a2f3d;
+  color: #ffd447;
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 .app__error {

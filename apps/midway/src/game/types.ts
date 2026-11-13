@@ -40,11 +40,15 @@ export interface BoardView {
   shots: ShotView[]
 }
 
+
+/** PlayerInfo describes a player of the match. */
 export interface PlayerInfo {
   id: string
   name: string
   color: string
   ready: boolean
+  /** True while the player is away and waiting to come back. */
+  disconnected?: boolean
 }
 
 export interface Snapshot {
@@ -79,6 +83,8 @@ export interface ClientMessage {
   room?: string
   /** Secret key of the room: the credential that admits a player. */
   key?: string
+  /** Token that identifies the player across a reconnection. */
+  resumeToken?: string
   kind?: ShipKind
   x?: number
   y?: number
@@ -92,6 +98,8 @@ export interface ServerMessage {
   room?: string
   /** Secret key of the room, sent only to the player that created it. */
   key?: string
+  /** Token that identifies the player across a reconnection. */
+  resumeToken?: string
   message?: string
   state?: Snapshot
 }

@@ -12,6 +12,8 @@ type ClientMessage struct {
 	// Key is the secret key of the room. It is the credential that admits a
 	// player: the code alone is not enough.
 	Key string `json:"key,omitempty"`
+	// ResumeToken identifies a player that comes back after a disconnection.
+	ResumeToken string `json:"resumeToken,omitempty"`
 	// Kind is the ship type of a place or remove message.
 	Kind string `json:"kind,omitempty"`
 	// X and Y are the coordinates of a cell.
@@ -28,9 +30,11 @@ type ServerMessage struct {
 	Room     string `json:"room,omitempty"`
 	// Key is the secret key of the room. It is only sent to the player that
 	// created the room, which has to share it with the opponent.
-	Key     string         `json:"key,omitempty"`
-	Message string         `json:"message,omitempty"`
-	State   *game.Snapshot `json:"state,omitempty"`
+	Key string `json:"key,omitempty"`
+	// ResumeToken identifies the player across a reconnection.
+	ResumeToken string         `json:"resumeToken,omitempty"`
+	Message     string         `json:"message,omitempty"`
+	State       *game.Snapshot `json:"state,omitempty"`
 }
 
 // Message types exchanged over the wire.

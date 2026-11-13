@@ -1,6 +1,8 @@
 package game
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,6 +14,14 @@ type Player struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Color string `json:"color"`
+
+	// ResumeToken identifies the player across a reconnection. It is never
+	// broadcast: the snapshot builds its own Player values.
+	ResumeToken string `json:"-"`
+
+	// Disconnected is true while the player is away and waiting to come
+	// back.
+	Disconnected bool `json:"disconnected,omitempty"`
 
 	// Board holds the player's own fleet and the shots it received.
 	Board *Board `json:"-"`
@@ -143,16 +153,64 @@ func (g *Game) AddPlayer(id, name string) (*Player, bool) {
 	if len(g.players) == 1 {
 		color = "#4f8ef7"
 	}
+	token, err := randomToken()
+	if err != nil {
+		return nil, false
+	}
 	p := &Player{
-		ID:    id,
-		Name:  name,
-		Color: color,
-		Board: NewBoard(g.width, g.height),
-		Fleet: DefaultFleet(),
+		ID:          id,
+		Name:        name,
+		Color:       color,
+		ResumeToken: token,
+		Board:       NewBoard(g.width, g.height),
+		Fleet:       DefaultFleet(),
 	}
 	g.players[id] = p
 	g.order = append(g.order, id)
 	return p, true
+}
+
+// SetDisconnected marks a player as away or back.
+func (g *Game) SetDisconnected(id string, disconnected bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if p, ok := g.players[id]; ok {
+		p.Disconnected = disconnected
+	}
+}
+
+// ResumePlayer returns the player that owns the given resume token. It only
+// succeeds for a player that is away: a token of a connected player cannot
+// be used to take its seat.
+func (g *Game) ResumePlayer(token string) (*Player, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if token == "" {
+		return nil, false
+	}
+	for _, id := range g.order {
+		p, ok := g.players[id]
+		if !ok || p.ResumeToken != token {
+			continue
+		}
+		if !p.Disconnected {
+			return nil, false
+		}
+		p.Disconnected = false
+		return p, true
+	}
+	return nil, false
+}
+
+// randomToken returns a random token to resume a match.
+func randomToken() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // RemovePlayer removes a player from the match.
@@ -307,6 +365,12 @@ func (g *Game) SnapshotFor(id string) Snapshot {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
+	// A view for an id that is not in the match is empty: it must not carry
+	// the names of the players nor the board of any of them.
+	if _, ok := g.players[id]; !ok {
+		return emptySnapshot(g.width, g.height)
+	}
+
 	players := make([]Player, 0, len(g.order))
 	ready := make([]string, 0, len(g.order))
 	for _, pid := range g.order {
@@ -315,10 +379,11 @@ func (g *Game) SnapshotFor(id string) Snapshot {
 			continue
 		}
 		players = append(players, Player{
-			ID:    p.ID,
-			Name:  p.Name,
-			Color: p.Color,
-			Ready: p.Ready,
+			ID:           p.ID,
+			Name:         p.Name,
+			Color:        p.Color,
+			Ready:        p.Ready,
+			Disconnected: p.Disconnected,
 		})
 		if p.Ready {
 			ready = append(ready, p.ID)
@@ -371,8 +436,37 @@ func (g *Game) SnapshotFor(id string) Snapshot {
 	}
 }
 
+// emptySnapshot builds a snapshot without any information about the match.
+func emptySnapshot(width, height int) Snapshot {
+	return Snapshot{
+		Phase:   PhaseSetup,
+		Width:   width,
+		Height:  height,
+		Players: []Player{},
+		Own: BoardView{
+			Width: width, Height: height,
+			Ships: []ShipView{}, SunkShips: []ShipView{}, Shots: []ShotView{},
+		},
+		Enemy: BoardView{
+			Width: width, Height: height,
+			Ships: []ShipView{}, SunkShips: []ShipView{}, Shots: []ShotView{},
+		},
+		CurrentTurn:  "",
+		Winner:       "",
+		YourFleet:    DefaultFleet(),
+		EnemyFleet:   DefaultFleet(),
+		ReadyPlayers: []string{},
+	}
+}
+
 // opponentOf returns the other player of the match.
+//
+// An id that is not in the match has no opponent: falling back to the first
+// player of the list would hand an outsider the board of a real player.
 func (g *Game) opponentOf(id string) *Player {
+	if _, ok := g.players[id]; !ok {
+		return nil
+	}
 	for _, pid := range g.order {
 		if pid == id {
 			continue

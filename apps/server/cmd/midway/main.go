@@ -16,8 +16,10 @@ func main() {
 	port := envOrDefault("PORT", "8080")
 	boardSize := envIntOrDefault("BOARD_SIZE", 10)
 
+	config := ws.ConfigFromEnv()
+
 	registry := room.NewRegistry(boardSize, boardSize)
-	hub := ws.NewHub(registry)
+	hub := ws.NewHubWithConfig(registry, config)
 	defer hub.Stop()
 
 	mux := http.NewServeMux()
@@ -36,6 +38,10 @@ func main() {
 
 	log.Printf("midway server listening on :%s (board %dx%d, up to %d rooms)",
 		port, boardSize, boardSize, room.MaxRooms)
+	log.Printf("allowed origins: %v (empty origin allowed: %t)",
+		config.AllowedOrigins, config.AllowEmptyOrigin)
+	log.Printf("limits: %d connections per ip, %d in total, %d messages per second",
+		config.MaxConnectionsPerIP, config.MaxConnections, config.MessagesPerSecond)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}

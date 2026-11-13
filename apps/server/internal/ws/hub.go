@@ -27,6 +27,10 @@ const (
 	broadcastRate = 20
 )
 
+// The upgrader accepts the upgrade: the origin was already validated by
+// ServeWS, which rejects the handshake with 403 before reaching this point.
+// Keep this permissive on purpose so the check is not duplicated in two
+// places.
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -41,11 +45,29 @@ type client struct {
 	done chan struct{}
 	hub  *Hub
 
+	// ip is the remote address of the client, used for the connection limit.
+	ip string
+	// playerID is the identity of the player in the match. It survives a
+	// reconnection, unlike the id of the connection.
+	playerID string
+	// resumeToken identifies the player across a reconnection.
+	resumeToken string
+	// bucket is the token bucket that limits the message rate.
+	bucket *tokenBucket
+
 	// roomMu guards the room field: it is written by the read goroutine and
 	// read by the broadcast goroutine.
 	roomMu sync.RWMutex
 	// room is the room the client belongs to, nil until it joins one.
 	room *room.Room
+}
+
+// currentGameID returns the identity of the player in the match, empty when
+// the client is not in a room.
+func (c *client) currentGameID() string {
+	c.roomMu.RLock()
+	defer c.roomMu.RUnlock()
+	return c.playerID
 }
 
 // currentRoom returns the room of the client, or nil when it has not joined
@@ -63,23 +85,84 @@ func (c *client) setRoom(r *room.Room) {
 	c.room = r
 }
 
+// setPlayer assigns the identity of the player in the match.
+func (c *client) setPlayer(playerID, resumeToken string) {
+	c.roomMu.Lock()
+	defer c.roomMu.Unlock()
+	c.playerID = playerID
+	c.resumeToken = resumeToken
+}
+
 // Hub owns the rooms and the connected clients.
 type Hub struct {
 	rooms   *room.Registry
+	config  Config
 	mu      sync.RWMutex
 	clients map[*client]bool
 	stop    chan struct{}
+
+	// timersMu guards the pending removals.
+	timersMu sync.Mutex
+	// removals holds the pending removal of a player that went away.
+	removals map[string]*time.Timer
+
+	// connMu guards the connection counters.
+	connMu sync.Mutex
+	// connsPerIP counts the open sockets by remote address.
+	connsPerIP map[string]int
+	// totalConns is the number of open sockets.
+	totalConns int
 }
 
-// NewHub creates a hub over a room registry and starts its broadcast loop.
+// NewHub creates a hub over a room registry with the default configuration
+// and starts its broadcast loop.
 func NewHub(rooms *room.Registry) *Hub {
+	return NewHubWithConfig(rooms, ConfigFromEnv())
+}
+
+// NewHubWithConfig creates a hub with an explicit configuration and starts
+// its broadcast loop.
+func NewHubWithConfig(rooms *room.Registry, config Config) *Hub {
 	h := &Hub{
-		rooms:   rooms,
-		clients: make(map[*client]bool),
-		stop:    make(chan struct{}),
+		rooms:      rooms,
+		config:     config,
+		clients:    make(map[*client]bool),
+		stop:       make(chan struct{}),
+		connsPerIP: make(map[string]int),
+		removals:   make(map[string]*time.Timer),
 	}
 	go h.Run()
 	return h
+}
+
+// registerConnection counts a new socket and reports whether it is allowed.
+func (h *Hub) registerConnection(ip string) bool {
+	h.connMu.Lock()
+	defer h.connMu.Unlock()
+
+	if h.totalConns >= h.config.MaxConnections {
+		return false
+	}
+	if h.connsPerIP[ip] >= h.config.MaxConnectionsPerIP {
+		return false
+	}
+	h.connsPerIP[ip]++
+	h.totalConns++
+	return true
+}
+
+// releaseConnection gives back the slot of a closed socket.
+func (h *Hub) releaseConnection(ip string) {
+	h.connMu.Lock()
+	defer h.connMu.Unlock()
+
+	if h.connsPerIP[ip] > 0 {
+		h.connsPerIP[ip]--
+		if h.connsPerIP[ip] == 0 {
+			delete(h.connsPerIP, ip)
+		}
+	}
+	h.totalConns--
 }
 
 // Stop ends the broadcast loop.
@@ -94,18 +177,37 @@ func (h *Hub) Stop() {
 }
 
 // ServeWS upgrades an HTTP request to a WebSocket connection.
+//
+// The origin is checked before the upgrade, so a foreign website gets a 403
+// instead of a socket it could abuse.
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
+	if !h.config.AllowsOrigin(r.Header.Get("Origin")) {
+		log.Printf("ws: origin rejected: %q", r.Header.Get("Origin"))
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return
+	}
+
+	ip := clientIP(r)
+	if !h.registerConnection(ip) {
+		log.Printf("ws: connection limit reached for %s", ip)
+		http.Error(w, "too many connections", http.StatusTooManyRequests)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		h.releaseConnection(ip)
 		log.Printf("ws: upgrade failed: %v", err)
 		return
 	}
 	c := &client{
-		id:   newID(),
-		conn: conn,
-		send: make(chan []byte, 64),
-		done: make(chan struct{}),
-		hub:  h,
+		ip:     ip,
+		bucket: newTokenBucket(h.config.MessagesPerSecond),
+		id:     newID(),
+		conn:   conn,
+		send:   make(chan []byte, 64),
+		done:   make(chan struct{}),
+		hub:    h,
 	}
 
 	h.mu.Lock()
@@ -146,7 +248,12 @@ func (h *Hub) broadcastState() {
 			// The client has not entered a room yet.
 			continue
 		}
-		snapshot := r.Game().SnapshotFor(c.id)
+		gameID := c.currentGameID()
+		if gameID == "" {
+			// The client is entering the room but has no identity yet.
+			continue
+		}
+		snapshot := r.Game().SnapshotFor(gameID)
 		payload, err := json.Marshal(ServerMessage{Type: TypeState, State: &snapshot})
 		if err != nil {
 			log.Printf("ws: marshal state: %v", err)
@@ -158,6 +265,39 @@ func (h *Hub) broadcastState() {
 			// Slow client: drop it rather than blocking the broadcast.
 			h.remove(c)
 		}
+	}
+}
+
+// scheduleRemoval releases the seat of a player that went away, unless it
+// comes back before the grace period ends.
+func (h *Hub) scheduleRemoval(r *room.Room, playerID string) {
+	h.timersMu.Lock()
+	defer h.timersMu.Unlock()
+
+	if existing, ok := h.removals[playerID]; ok {
+		existing.Stop()
+	}
+	h.removals[playerID] = time.AfterFunc(h.config.ReconnectGrace, func() {
+		h.timersMu.Lock()
+		delete(h.removals, playerID)
+		h.timersMu.Unlock()
+
+		g := r.Game()
+		g.RemovePlayer(playerID)
+		if len(g.Players()) == 0 {
+			h.rooms.Delete(r.Code())
+		}
+	})
+}
+
+// cancelRemoval stops the pending removal of a player that came back.
+func (h *Hub) cancelRemoval(playerID string) {
+	h.timersMu.Lock()
+	defer h.timersMu.Unlock()
+
+	if timer, ok := h.removals[playerID]; ok {
+		timer.Stop()
+		delete(h.removals, playerID)
 	}
 }
 
@@ -176,7 +316,9 @@ func (h *Hub) remove(c *client) {
 func (c *client) readPump() {
 	defer func() {
 		c.hub.remove(c)
-		c.leaveRoom()
+		// The seat is kept for a while: the client may come back.
+		c.disconnectRoom()
+		c.hub.releaseConnection(c.ip)
 	}()
 
 	c.conn.SetReadLimit(4096)
@@ -190,6 +332,12 @@ func (c *client) readPump() {
 		if err := c.conn.ReadJSON(&msg); err != nil {
 			return
 		}
+		// A client that floods the server is disconnected: the instance is
+		// shared by every player and cannot be exhausted.
+		if !c.bucket.allow() {
+			log.Printf("ws: message rate limit reached, closing the connection")
+			return
+		}
 		c.handle(msg)
 	}
 }
@@ -200,7 +348,7 @@ func (c *client) handle(msg ClientMessage) {
 	case TypeCreate:
 		c.createRoom(msg.Name)
 	case TypeJoin:
-		c.joinRoom(msg.Name, msg.Room, msg.Key)
+		c.joinRoom(msg.Name, msg.Room, msg.Key, msg.ResumeToken)
 	case TypeLeave:
 		c.leaveRoom()
 		c.sendJSON(ServerMessage{Type: TypeLeft})
@@ -210,7 +358,7 @@ func (c *client) handle(msg ClientMessage) {
 			c.sendError(err.Error())
 			return
 		}
-		if err := g.PlaceShip(c.id, game.ShipKind(msg.Kind), msg.X, msg.Y, game.Orientation(msg.Orientation)); err != nil {
+		if err := g.PlaceShip(c.currentGameID(), game.ShipKind(msg.Kind), msg.X, msg.Y, game.Orientation(msg.Orientation)); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeRemove:
@@ -219,7 +367,7 @@ func (c *client) handle(msg ClientMessage) {
 			c.sendError(err.Error())
 			return
 		}
-		if err := g.RemoveShip(c.id, game.ShipKind(msg.Kind)); err != nil {
+		if err := g.RemoveShip(c.currentGameID(), game.ShipKind(msg.Kind)); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeReady:
@@ -228,7 +376,7 @@ func (c *client) handle(msg ClientMessage) {
 			c.sendError(err.Error())
 			return
 		}
-		if err := g.Ready(c.id); err != nil {
+		if err := g.Ready(c.currentGameID()); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeShoot:
@@ -237,7 +385,7 @@ func (c *client) handle(msg ClientMessage) {
 			c.sendError(err.Error())
 			return
 		}
-		if _, err := g.Shoot(c.id, msg.X, msg.Y); err != nil {
+		if _, err := g.Shoot(c.currentGameID(), msg.X, msg.Y); err != nil {
 			c.sendError(err.Error())
 		}
 	case TypeStart:
@@ -265,22 +413,39 @@ func (c *client) createRoom(name string) {
 		c.sendError(err.Error())
 		return
 	}
-	if _, ok := created.Game().AddPlayer(c.id, name); !ok {
+	player, ok := created.Game().AddPlayer(c.id, name)
+	if !ok {
 		c.hub.rooms.Delete(created.Code())
 		c.sendError("no se pudo entrar en la sala")
 		return
 	}
+	// The identity is set before the room: otherwise there is a window in
+	// which the client has a room but no identity, and the broadcast would
+	// send it an empty snapshot.
+	c.setPlayer(player.ID, player.ResumeToken)
 	c.setRoom(created)
 	// The creator receives the secret key: it is what it has to share with
 	// the opponent to let the opponent in.
 	c.sendJSON(ServerMessage{
-		Type: TypeWelcome, PlayerID: c.id, Room: created.Code(), Key: created.Key(),
+		Type:        TypeWelcome,
+		PlayerID:    player.ID,
+		Room:        created.Code(),
+		Key:         created.Key(),
+		ResumeToken: player.ResumeToken,
 	})
 }
 
-// joinRoom enters an existing room identified by its six-digit code and its
-// secret key.
-func (c *client) joinRoom(name, code, key string) {
+// joinRoom enters an existing room.
+//
+// The client sends the six-digit code of the room and one of the two
+// credentials:
+//
+//   - the resume token, when it comes back after a disconnection: it takes
+//     its seat again, with the fleet and the place in the turn order;
+//   - the secret key of the room, when it enters for the first time.
+//
+// The code alone admits nobody: it is short enough to be guessed.
+func (c *client) joinRoom(name, code, key, resumeToken string) {
 	if c.currentRoom() != nil {
 		c.sendError("ya estás en una sala")
 		return
@@ -295,8 +460,22 @@ func (c *client) joinRoom(name, code, key string) {
 		c.sendError("no existe la sala " + code)
 		return
 	}
-	// The secret key is the credential: the code alone does not admit a
-	// player, so a guessed code is not enough to sit in a match.
+
+	// A player that comes back after a disconnection takes its seat again.
+	if player, ok := found.Game().ResumePlayer(strings.TrimSpace(resumeToken)); ok {
+		c.setPlayer(player.ID, player.ResumeToken)
+		c.setRoom(found)
+		c.hub.cancelRemoval(player.ID)
+		c.sendJSON(ServerMessage{
+			Type:        TypeWelcome,
+			PlayerID:    player.ID,
+			Room:        found.Code(),
+			ResumeToken: player.ResumeToken,
+		})
+		return
+	}
+
+	// The secret key is the credential of a first entry.
 	if !found.MatchesKey(key) {
 		c.sendError("la clave de la sala no es correcta")
 		return
@@ -307,16 +486,26 @@ func (c *client) joinRoom(name, code, key string) {
 		c.sendError("la partida de esa sala ya empezó")
 		return
 	}
-	if _, ok := found.Game().AddPlayer(c.id, name); !ok {
+
+	player, ok := found.Game().AddPlayer(c.id, name)
+	if !ok {
 		c.sendError("la sala está llena")
 		return
 	}
+	c.setPlayer(player.ID, player.ResumeToken)
 	c.setRoom(found)
-	c.sendJSON(ServerMessage{Type: TypeWelcome, PlayerID: c.id, Room: found.Code()})
+	c.sendJSON(ServerMessage{
+		Type:        TypeWelcome,
+		PlayerID:    player.ID,
+		Room:        found.Code(),
+		ResumeToken: player.ResumeToken,
+	})
 }
 
 // leaveRoom removes the client from its room. The room is released when it is
 // left empty, and a match in progress is abandoned.
+//
+// This is the deliberate exit: the player gives up its seat.
 func (c *client) leaveRoom() {
 	r := c.currentRoom()
 	if r == nil {
@@ -326,7 +515,7 @@ func (c *client) leaveRoom() {
 
 	g := r.Game()
 	wasPlaying := g.Phase() == game.PhasePlaying
-	g.RemovePlayer(c.id)
+	g.RemovePlayer(c.currentGameID())
 	if wasPlaying {
 		// The match is abandoned: the remaining player starts over.
 		g.Reset()
@@ -334,6 +523,22 @@ func (c *client) leaveRoom() {
 	if len(g.Players()) == 0 {
 		c.hub.rooms.Delete(r.Code())
 	}
+}
+
+// disconnectRoom marks the player as away without giving up its seat: the
+// client may come back and resume the match. The seat is released after the
+// grace period if it does not.
+func (c *client) disconnectRoom() {
+	r := c.currentRoom()
+	if r == nil {
+		return
+	}
+	playerID := c.currentGameID()
+	if playerID == "" {
+		return
+	}
+	r.Game().SetDisconnected(playerID, true)
+	c.hub.scheduleRemoval(r, playerID)
 }
 
 // requireGame returns the match of the client's room.

@@ -32,6 +32,27 @@ func (s *testServer) dial(t *testing.T) *websocket.Conn {
 	return conn
 }
 
+// originHeader builds a request header with the given Origin.
+func originHeader(origin string) http.Header {
+	h := http.Header{}
+	h.Set("Origin", origin)
+	return h
+}
+
+// newTestServerWithConfig starts a hub with an explicit configuration.
+func newTestServerWithConfig(t *testing.T, cfg Config) *testServer {
+	t.Helper()
+
+	registry := room.NewRegistry(10, 10)
+	hub := NewHubWithConfig(registry, cfg)
+	t.Cleanup(hub.Stop)
+
+	srv := httptest.NewServer(http.HandlerFunc(hub.ServeWS))
+	t.Cleanup(srv.Close)
+
+	return &testServer{rooms: registry, url: "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}
+}
+
 // newTestServer spins up a hub behind an httptest server.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
@@ -415,22 +436,58 @@ func TestLeaveReleasesTheRoom(t *testing.T) {
 }
 
 func TestEmptyRoomIsDeleted(t *testing.T) {
-	srv := newTestServer(t)
+	// A short grace period: the seat is released as soon as it ends.
+	srv := newTestServerWithConfig(t, Config{
+		AllowedOrigins:      defaultAllowedOrigins,
+		AllowEmptyOrigin:    true,
+		MaxConnectionsPerIP: 100,
+		MaxConnections:      100,
+		MessagesPerSecond:   DefaultMessagesPerSecond,
+		ReconnectGrace:      300 * time.Millisecond,
+	})
 	c1 := srv.dial(t)
 
 	code, key := createRoom(t, c1, "Ana")
 
 	c1.Close()
-	time.Sleep(300 * time.Millisecond)
-
+	// The room survives the grace period: the player may come back.
+	time.Sleep(150 * time.Millisecond)
 	c2 := srv.dial(t)
 	c2.WriteJSON(ClientMessage{Type: TypeJoin, Name: "Beto", Room: code, Key: key})
-	readMessage(t, c2, TypeError) // the room no longer exists
+	readMessage(t, c2, TypeWelcome) // the room is still there
+
+	// The seat of the player that went away is released after the grace
+	// period, so the room holds only the player that is still connected.
+	time.Sleep(400 * time.Millisecond)
+	room, ok := srv.rooms.Get(code)
+	if !ok {
+		t.Fatal("the room must still exist")
+	}
+	if got := len(room.Game().Players()); got != 1 {
+		t.Fatalf("the room holds %d players, want 1", got)
+	}
+
+	// A room whose last player leaves is released.
+	c2.WriteJSON(ClientMessage{Type: TypeLeave})
+	readMessage(t, c2, TypeLeft)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && srv.rooms.Count() > 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if srv.rooms.Count() != 0 {
+		t.Fatalf("%d rooms left, want 0", srv.rooms.Count())
+	}
 }
 
 // TestRoomLimitIsEnforced covers the limit of simultaneous rooms.
 func TestRoomLimitIsEnforced(t *testing.T) {
-	srv := newTestServer(t)
+	srv := newTestServerWithConfig(t, Config{
+		AllowedOrigins:      defaultAllowedOrigins,
+		AllowEmptyOrigin:    true,
+		MaxConnectionsPerIP: 100,
+		MaxConnections:      100,
+		MessagesPerSecond:   DefaultMessagesPerSecond,
+	})
 
 	for i := 0; i < room.MaxRooms; i++ {
 		conn := srv.dial(t)
@@ -449,7 +506,13 @@ func TestRoomLimitIsEnforced(t *testing.T) {
 // TestTheLimitFreesRoomsWhenTheyAreEmpty checks that a room that is left
 // empty does not consume one of the ten slots forever.
 func TestTheLimitFreesRoomsWhenTheyAreEmpty(t *testing.T) {
-	srv := newTestServer(t)
+	srv := newTestServerWithConfig(t, Config{
+		AllowedOrigins:      defaultAllowedOrigins,
+		AllowEmptyOrigin:    true,
+		MaxConnectionsPerIP: 100,
+		MaxConnections:      100,
+		MessagesPerSecond:   DefaultMessagesPerSecond,
+	})
 
 	var conns []*websocket.Conn
 	for i := 0; i < room.MaxRooms; i++ {
@@ -465,6 +528,120 @@ func TestTheLimitFreesRoomsWhenTheyAreEmpty(t *testing.T) {
 	fresh := srv.dial(t)
 	fresh.WriteJSON(ClientMessage{Type: TypeCreate, Name: "Nuevo"})
 	readMessage(t, fresh, TypeWelcome)
+}
+
+// TestHandshakeFromAForeignOriginIsRejected checks that a website other than
+// the frontend cannot open a socket.
+func TestHandshakeFromAForeignOriginIsRejected(t *testing.T) {
+	srv := newTestServer(t)
+
+	_, resp, err := websocket.DefaultDialer.Dial(srv.url, originHeader("https://attacker.example"))
+	if err == nil {
+		t.Fatal("a foreign origin must not complete the handshake")
+	}
+	if resp == nil {
+		return
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+// TestHandshakeFromTheFrontendOriginIsAccepted checks that the real frontend
+// can still connect.
+func TestHandshakeFromTheFrontendOriginIsAccepted(t *testing.T) {
+	srv := newTestServer(t)
+
+	conn, _, err := websocket.DefaultDialer.Dial(srv.url, originHeader("https://midway.amarrete.com"))
+	if err != nil {
+		t.Fatalf("the frontend origin must be accepted: %v", err)
+	}
+	conn.Close()
+}
+
+// TestHandshakeFromTheLocalDevOriginIsAccepted checks that local development
+// keeps working.
+func TestHandshakeFromTheLocalDevOriginIsAccepted(t *testing.T) {
+	srv := newTestServer(t)
+
+	conn, _, err := websocket.DefaultDialer.Dial(srv.url, originHeader("http://localhost:5173"))
+	if err != nil {
+		t.Fatalf("the local dev origin must be accepted: %v", err)
+	}
+	conn.Close()
+}
+
+// TestHandshakeWithoutAnOriginIsAccepted keeps non-browser callers working.
+func TestHandshakeWithoutAnOriginIsAccepted(t *testing.T) {
+	srv := newTestServer(t)
+
+	conn, _, err := websocket.DefaultDialer.Dial(srv.url, nil)
+	if err != nil {
+		t.Fatalf("a client without an origin must be accepted: %v", err)
+	}
+	conn.Close()
+}
+
+// TestTooManyConnectionsFromOneAddressAreRefused checks the connection limit
+// per address.
+func TestTooManyConnectionsFromOneAddressAreRefused(t *testing.T) {
+	srv := newTestServerWithConfig(t, Config{
+		AllowedOrigins:      defaultAllowedOrigins,
+		AllowEmptyOrigin:    true,
+		MaxConnectionsPerIP: 2,
+		MaxConnections:      10,
+		MessagesPerSecond:   DefaultMessagesPerSecond,
+	})
+
+	var open []*websocket.Conn
+	for i := 0; i < 2; i++ {
+		conn, _, err := websocket.DefaultDialer.Dial(srv.url, nil)
+		if err != nil {
+			t.Fatalf("connection %d must be accepted: %v", i, err)
+		}
+		open = append(open, conn)
+	}
+
+	// The third connection from the same address exceeds the limit.
+	_, resp, err := websocket.DefaultDialer.Dial(srv.url, nil)
+	if err == nil {
+		t.Fatal("the connection over the limit must be refused")
+	}
+	if resp != nil && resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+	for _, c := range open {
+		c.Close()
+	}
+}
+
+// TestAFloodingSocketIsDropped checks the message rate limit.
+func TestAFloodingSocketIsDropped(t *testing.T) {
+	srv := newTestServerWithConfig(t, Config{
+		AllowedOrigins:      defaultAllowedOrigins,
+		AllowEmptyOrigin:    true,
+		MaxConnectionsPerIP: 10,
+		MaxConnections:      10,
+		MessagesPerSecond:   2,
+	})
+
+	conn := srv.dial(t)
+	defer conn.Close()
+
+	// Flood the socket with messages.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn.WriteJSON(ClientMessage{Type: TypePing})
+	}
+
+	// The server drops the connection when the bucket is empty.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var msg ClientMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			return // the connection was closed: the limit worked
+		}
+	}
 }
 
 func TestDecodeClientMessage(t *testing.T) {
