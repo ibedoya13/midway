@@ -5,7 +5,13 @@ import tseslint from 'typescript-eslint'
 
 export default [
   {
-    ignores: ['dist/**', 'node_modules/**', '**/*.d.ts'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      '**/*.d.ts',
+      // Build output of the Cloudflare CLI (contains the minified bundle).
+      '.cloudflare/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

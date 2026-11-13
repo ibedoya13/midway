@@ -137,13 +137,39 @@ frontend se construye **después** de desplegar el backend:
 
 ```bash
 VITE_WS_URL="wss://midway-463140756941.us-central1.run.app/ws" \
-  npm --workspace apps/web run build
+  npm --workspace apps/midway run build
 
-cf deploy apps/web/dist
+cd apps/midway && cf deploy dist
 ```
 
-Queda en `https://midway.amarrete.workers.dev`. La configuración del proyecto
-está en `wrangler.toml`.
+Queda en **https://midway.amarrete.com** (dominio propio en la zona
+`amarrete.com`) y también en `https://midway.amarrete.workers.dev`.
+
+La configuración está en `apps/midway/cloudflare.config.ts`. Ojo: el CLI `cf`
+v1 **no** lee `wrangler.toml`; usa `cloudflare.config.ts`, y el subdominio va en
+`worker.domains` (no en `routes`, que es lo que usa `wrangler` v3):
+
+```ts
+export default defineConfig({
+  worker: {
+    name: 'midway',
+    compatibilityDate: '2026-11-13',
+    assets: { notFoundHandling: 'single-page-application' },
+    domains: [
+      { hostname: 'midway.amarrete.com', production: true, previews: false },
+    ],
+  },
+})
+```
+
+Además, el nombre del Worker lo deriva el CLI del `name` de `package.json`,
+no del `name` del config: por eso el paquete se llama `midway` y no
+`@midway/web`.
+
+El archivo `cloudflare.config.ts` importa `defineConfig` de `@cloudflare/config`,
+que es una devDependency normal de npm (`@cloudflare/config@^0.32.0`, la misma
+versión que usa el CLI). Si el paquete no está instalado, el CLI no puede
+leer el config y el deploy falla con `Cannot find package '@cloudflare/config'`.
 
 ### Notas
 - El backend acepta cualquier `Origin` en el handshake WebSocket, necesario
@@ -152,6 +178,10 @@ está en `wrangler.toml`.
   plataforma); una partida más larga que eso se reconecta.
 - `--min-instances=1` mantiene una instancia encendida, así que el servicio
   responde al instante y las partidas no se pierden al escalar a cero.
+- El dominio `midway.amarrete.com` tarda unos minutos en responder la primera
+  vez: Cloudflare emite el certificado TLS y propaga el DNS.
+- Si `cf deploy` no aplica el dominio, comprueba que el `worker.config.json`
+  generado en `.cloudflare/output/` incluye la clave `domains`.
 
 ## Variables de entorno
 
