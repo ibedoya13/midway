@@ -237,7 +237,9 @@ leer el config y el deploy falla con `Cannot find package '@cloudflare/config'`.
 | `ALLOWED_ORIGINS` | `https://midway.amarrete.com,http://localhost:5173,http://127.0.0.1:5173` | Lista separada por comas de los orígenes que pueden abrir un WebSocket. Un origen ajeno recibe **403** antes del handshake. Los orígenes de IP privada en los puertos 5173/4173 se permiten siempre, para jugar en la red local. |
 | `ALLOW_EMPTY_ORIGIN` | `true` | Si los clientes sin cabecera `Origin` (sondas, scripts, health checks) pueden conectar. |
 | `MAX_CONNECTIONS_PER_IP` | `20` | Conexiones simultáneas por dirección. Una IP es toda una casa u oficina detrás del mismo router. |
-| `MAX_CONNECTIONS` | `100` | Conexiones simultáneas en total. |
+| `MAX_CONNECTIONS` | `2100` | Conexiones simultáneas en total (dos por sala más margen). |
+| `MAX_ROOMS` | `1000` | Salas simultáneas. El valor sale del perfilado de la instancia (ver abajo). |
+| `GOMEMLIMIT` | *(sin valor)* | Límite de memoria del heap de Go. Conviene fijarlo por debajo del límite de la instancia para que el recolector trabaje antes de que la plataforma mate el proceso. |
 | `MESSAGES_PER_SECOND` | `20` | Mensajes por segundo y socket. Al superarlo, el servidor cierra esa conexión. |
 | `RECONNECT_GRACE_SECONDS` | `300` | Tiempo que un jugador conserva su asiento tras perder la conexión. Pasado ese plazo, la plaza se libera. |
 
@@ -268,6 +270,43 @@ leer el config y el deploy falla con `Cannot find package '@cloudflare/config'`.
 > argumentos `key=value`, así que un valor con comas se rompe. Por eso
 > `ALLOWED_ORIGINS` acepta también `;` como separador:
 > `--update-env-vars "ALLOWED_ORIGINS=https://midway.amarrete.com;http://localhost:5173"`.
+
+### Capacidad (perfilado de la instancia)
+
+La instancia de Cloud Run tiene **512 MiB**. El perfilado con WebSocket reales
+sobre TLS (no solo el heap de Go, sino el RSS del proceso) da:
+
+| Salas (2 jugadores cada una) | RSS | % de 512 MiB | Ciclo de broadcast |
+| --- | --- | --- | --- |
+| 50 | 21,9 MiB | 4,3% | — |
+| 150 | 29,8 MiB | 5,8% | — |
+| 300 | 42,5 MiB | 8,3% | — |
+| 500 | 59,2 MiB | 11,6% | 1,2 ms (2,3%) |
+| **1000** | **190,5 MiB** | **37,2%** | **7,5 ms (15%)** |
+
+La regresión lineal da **85 KiB por sala** con un coste fijo de 17,6 MiB, y
+predice los puntos medidos con menos del 1% de error.
+
+El límite real **no es la memoria sino la CPU**: el broadcast serializa un
+snapshot por cliente 20 veces por segundo, así que cada ciclo debe caber en
+50 ms. Con 1000 salas y 2000 clientes el ciclo tarda 7,5 ms (15% del
+presupuesto); con 2000 salas serían 18 ms (36%).
+
+Por eso `MAX_ROOMS=1000` y `MAX_CONNECTIONS=2100` (dos jugadores por sala más
+margen). Por encima de ~1500 salas la memoria seguiría cabiendo, pero el
+broadcast se acercaría al 30% de CPU y el juego empezaría a notarse.
+
+Las cifras se reproducen con los tests de medición de
+`apps/server/internal/ws/memory_test.go`. Son pruebas de carga, así que solo
+se ejecutan cuando se piden:
+
+```bash
+cd apps/server
+MIDWAY_MEASURE=1 go test ./internal/ws/ -run TestValidateCapacity -v
+```
+
+Sin la variable `MIDWAY_MEASURE` los tests se saltan: abren miles de
+conexiones y no son aptos para una máquina de desarrollo ni para CI.
 
 ### Verificación de la seguridad
 

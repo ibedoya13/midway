@@ -21,8 +21,13 @@ const (
 	CodeLength = 6
 	// codeSpace is the number of distinct codes: 000000 to 999999.
 	codeSpace = 1000000
-	// MaxRooms is the number of simultaneous rooms the server hosts.
-	MaxRooms = 10
+	// MaxRooms is the default number of simultaneous rooms.
+	//
+	// The value comes from the profiling of the instance: with 512 MiB and
+	// two players per room, 1000 rooms use 190 MiB (37%) and the broadcast
+	// takes 15% of its 50 ms budget. The real limit is configured per
+	// deployment with MAX_ROOMS.
+	MaxRooms = 1000
 	// KeyLength is the number of hex characters of the secret key.
 	KeyLength = 32
 	// keyBytes is the number of random bytes behind the secret key.
@@ -65,16 +70,26 @@ type Registry struct {
 	rooms  map[string]*Room
 	width  int
 	height int
+	// max is the number of rooms the registry holds at the same time.
+	max int
 }
 
-// NewRegistry creates a registry whose rooms use the given board size.
-func NewRegistry(width, height int) *Registry {
+// NewRegistry creates a registry whose rooms use the given board size and
+// that holds up to maxRooms rooms.
+func NewRegistry(width, height, maxRooms int) *Registry {
+	if maxRooms <= 0 {
+		maxRooms = MaxRooms
+	}
 	return &Registry{
 		rooms:  make(map[string]*Room),
 		width:  width,
 		height: height,
+		max:    maxRooms,
 	}
 }
+
+// MaxRooms returns the number of rooms the registry holds at the same time.
+func (reg *Registry) MaxRooms() int { return reg.max }
 
 // Create makes a new room with a unique six-digit code. It fails when the
 // registry already holds MaxRooms rooms.
@@ -82,8 +97,8 @@ func (reg *Registry) Create() (*Room, error) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 
-	if len(reg.rooms) >= MaxRooms {
-		return nil, fmt.Errorf("no hay salas disponibles (máximo %d)", MaxRooms)
+	if len(reg.rooms) >= reg.max {
+		return nil, fmt.Errorf("no hay salas disponibles (máximo %d)", reg.max)
 	}
 
 	// Retry on the (unlikely) collision with an existing code.

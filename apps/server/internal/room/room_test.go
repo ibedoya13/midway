@@ -30,7 +30,7 @@ func TestGenerateCodeIsNotConstant(t *testing.T) {
 }
 
 func TestRegistryCreateMakesDistinctRooms(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 
 	first, err := reg.Create()
 	if err != nil {
@@ -50,7 +50,7 @@ func TestRegistryCreateMakesDistinctRooms(t *testing.T) {
 }
 
 func TestRegistryGetFindsAnExistingRoom(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 	created, err := reg.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -67,7 +67,7 @@ func TestRegistryGetFindsAnExistingRoom(t *testing.T) {
 
 // TestCreateGeneratesASecretKey checks that every room gets a secret key.
 func TestCreateGeneratesASecretKey(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 
 	r, err := reg.Create()
 	if err != nil {
@@ -84,7 +84,7 @@ func TestCreateGeneratesASecretKey(t *testing.T) {
 
 // TestSecretKeysAreUnique checks that two rooms never share a key.
 func TestSecretKeysAreUnique(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 
 	seen := make(map[string]bool)
 	for i := 0; i < MaxRooms; i++ {
@@ -101,7 +101,7 @@ func TestSecretKeysAreUnique(t *testing.T) {
 
 // TestMatchesKey checks the comparison of the secret key.
 func TestMatchesKey(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 
 	r, err := reg.Create()
 	if err != nil {
@@ -119,8 +119,37 @@ func TestMatchesKey(t *testing.T) {
 	}
 }
 
+// TestTheLimitOfRoomsIsConfigurable checks that the number of rooms can be
+// set per deployment: it depends on the memory of the instance.
+func TestTheLimitOfRoomsIsConfigurable(t *testing.T) {
+	reg := NewRegistry(10, 10, 3)
+
+	if reg.MaxRooms() != 3 {
+		t.Fatalf("MaxRooms = %d, want 3", reg.MaxRooms())
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := reg.Create(); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+	if _, err := reg.Create(); err == nil {
+		t.Fatal("the room over the limit must be refused")
+	}
+}
+
+// TestANonPositiveLimitFallsBackToTheDefault checks that a broken
+// configuration does not disable the limit.
+func TestANonPositiveLimitFallsBackToTheDefault(t *testing.T) {
+	reg := NewRegistry(10, 10, 0)
+
+	if reg.MaxRooms() != MaxRooms {
+		t.Fatalf("MaxRooms = %d, want the default %d", reg.MaxRooms(), MaxRooms)
+	}
+}
+
 func TestRegistryGetIgnoresAnUnknownCode(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 
 	if _, ok := reg.Get("000000"); ok {
 		t.Fatal("Get found a room that does not exist")
@@ -128,7 +157,7 @@ func TestRegistryGetIgnoresAnUnknownCode(t *testing.T) {
 }
 
 func TestRegistryDeleteRemovesTheRoom(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 	created, err := reg.Create()
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -157,7 +186,7 @@ func TestIsValidCode(t *testing.T) {
 
 // TestRegistryRefusesMoreThanTenRooms covers the limit of simultaneous rooms.
 func TestRegistryRefusesMoreThanTenRooms(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 
 	for i := 0; i < MaxRooms; i++ {
 		if _, err := reg.Create(); err != nil {
@@ -179,7 +208,7 @@ func TestRegistryRefusesMoreThanTenRooms(t *testing.T) {
 // TestRegistryAllowsCreatingAgainAfterAFreeSlot covers that the limit frees
 // up when a room is deleted.
 func TestRegistryAllowsCreatingAgainAfterAFreeSlot(t *testing.T) {
-	reg := NewRegistry(10, 10)
+	reg := NewRegistry(10, 10, MaxRooms)
 
 	var codes []string
 	for i := 0; i < MaxRooms; i++ {

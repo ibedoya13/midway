@@ -34,10 +34,13 @@ type Config struct {
 const (
 	// DefaultMaxConnectionsPerIP allows several players on the same
 	// network: one address is a whole household or office behind the same
-	// router, and each of them may open a socket.
+	// router, and each of them may open a socket. It also keeps a single
+	// address from taking the whole instance.
 	DefaultMaxConnectionsPerIP = 20
-	// DefaultMaxConnections caps the total number of open sockets.
-	DefaultMaxConnections = 100
+	// DefaultMaxConnections caps the total number of open sockets. It has
+	// to allow two players per room plus some headroom: with 1000 rooms
+	// that is 2000 sockets.
+	DefaultMaxConnections = 2100
 	// DefaultMessagesPerSecond allows a burst of gameplay messages.
 	DefaultMessagesPerSecond = 20
 	// DefaultReconnectGrace is how long a player that loses the connection

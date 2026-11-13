@@ -13,12 +13,22 @@ import (
 )
 
 func main() {
+	// The instance has a hard memory limit. GOMEMLIMIT tells the garbage
+	// collector to keep the heap below it, so the process is not killed by
+	// the platform when the rooms pile up.
+	if limit := os.Getenv("GOMEMLIMIT"); limit != "" {
+		log.Printf("memory limit: %s", limit)
+	} else {
+		log.Printf("memory limit: not set, the heap can grow until the platform kills the process")
+	}
+
 	port := envOrDefault("PORT", "8080")
 	boardSize := envIntOrDefault("BOARD_SIZE", 10)
+	maxRooms := envIntOrDefault("MAX_ROOMS", room.MaxRooms)
 
 	config := ws.ConfigFromEnv()
 
-	registry := room.NewRegistry(boardSize, boardSize)
+	registry := room.NewRegistry(boardSize, boardSize, maxRooms)
 	hub := ws.NewHubWithConfig(registry, config)
 	defer hub.Stop()
 
@@ -37,7 +47,7 @@ func main() {
 	}
 
 	log.Printf("midway server listening on :%s (board %dx%d, up to %d rooms)",
-		port, boardSize, boardSize, room.MaxRooms)
+		port, boardSize, boardSize, maxRooms)
 	log.Printf("allowed origins: %v (empty origin allowed: %t)",
 		config.AllowedOrigins, config.AllowEmptyOrigin)
 	log.Printf("limits: %d connections per ip, %d in total, %d messages per second",

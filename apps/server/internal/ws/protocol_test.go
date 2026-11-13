@@ -32,6 +32,21 @@ func (s *testServer) dial(t *testing.T) *websocket.Conn {
 	return conn
 }
 
+// newTestServerWithConfigAndRooms starts a hub with an explicit
+// configuration and a given number of rooms.
+func newTestServerWithConfigAndRooms(t *testing.T, maxRooms int, cfg Config) *testServer {
+	t.Helper()
+
+	registry := room.NewRegistry(10, 10, maxRooms)
+	hub := NewHubWithConfig(registry, cfg)
+	t.Cleanup(hub.Stop)
+
+	srv := httptest.NewServer(http.HandlerFunc(hub.ServeWS))
+	t.Cleanup(srv.Close)
+
+	return &testServer{rooms: registry, url: "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}
+}
+
 // originHeader builds a request header with the given Origin.
 func originHeader(origin string) http.Header {
 	h := http.Header{}
@@ -43,7 +58,7 @@ func originHeader(origin string) http.Header {
 func newTestServerWithConfig(t *testing.T, cfg Config) *testServer {
 	t.Helper()
 
-	registry := room.NewRegistry(10, 10)
+	registry := room.NewRegistry(10, 10, room.MaxRooms)
 	hub := NewHubWithConfig(registry, cfg)
 	t.Cleanup(hub.Stop)
 
@@ -57,7 +72,7 @@ func newTestServerWithConfig(t *testing.T, cfg Config) *testServer {
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 
-	registry := room.NewRegistry(10, 10)
+	registry := room.NewRegistry(10, 10, room.MaxRooms)
 	hub := NewHub(registry)
 	t.Cleanup(hub.Stop)
 
@@ -481,7 +496,8 @@ func TestEmptyRoomIsDeleted(t *testing.T) {
 
 // TestRoomLimitIsEnforced covers the limit of simultaneous rooms.
 func TestRoomLimitIsEnforced(t *testing.T) {
-	srv := newTestServerWithConfig(t, Config{
+	// The registry holds few rooms: the limit is what is being tested.
+	srv := newTestServerWithConfigAndRooms(t, 3, Config{
 		AllowedOrigins:      defaultAllowedOrigins,
 		AllowEmptyOrigin:    true,
 		MaxConnectionsPerIP: 100,
@@ -489,7 +505,7 @@ func TestRoomLimitIsEnforced(t *testing.T) {
 		MessagesPerSecond:   DefaultMessagesPerSecond,
 	})
 
-	for i := 0; i < room.MaxRooms; i++ {
+	for i := 0; i < 3; i++ {
 		conn := srv.dial(t)
 		createRoom(t, conn, fmt.Sprintf("P%d", i))
 	}
@@ -504,9 +520,9 @@ func TestRoomLimitIsEnforced(t *testing.T) {
 }
 
 // TestTheLimitFreesRoomsWhenTheyAreEmpty checks that a room that is left
-// empty does not consume one of the ten slots forever.
+// empty does not consume one of its slots forever.
 func TestTheLimitFreesRoomsWhenTheyAreEmpty(t *testing.T) {
-	srv := newTestServerWithConfig(t, Config{
+	srv := newTestServerWithConfigAndRooms(t, 3, Config{
 		AllowedOrigins:      defaultAllowedOrigins,
 		AllowEmptyOrigin:    true,
 		MaxConnectionsPerIP: 100,
@@ -515,7 +531,7 @@ func TestTheLimitFreesRoomsWhenTheyAreEmpty(t *testing.T) {
 	})
 
 	var conns []*websocket.Conn
-	for i := 0; i < room.MaxRooms; i++ {
+	for i := 0; i < 3; i++ {
 		conn := srv.dial(t)
 		createRoom(t, conn, fmt.Sprintf("P%d", i))
 		conns = append(conns, conn)

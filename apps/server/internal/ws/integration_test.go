@@ -21,7 +21,7 @@ import (
 // The test is agnostic about which connection joined first: the turn order is
 // decided by the server, so the roles are read from the snapshots.
 func TestTwoPlayersPlayAFullBattleshipMatch(t *testing.T) {
-	registry := room.NewRegistry(10, 10)
+	registry := room.NewRegistry(10, 10, room.MaxRooms)
 	hub := NewHub(registry)
 	defer hub.Stop()
 
@@ -93,11 +93,14 @@ func TestTwoPlayersPlayAFullBattleshipMatch(t *testing.T) {
 		t.Fatalf("current turn = %q, want one of the players", starter)
 	}
 	attacker, defender := first, second
+	attackerID, defenderID := firstID, secondID
 	if starter == secondID {
 		attacker, defender = second, first
+		attackerID, defenderID = secondID, firstID
 	}
 
 	// The attacker hits the carrier of the defender.
+	waitForTurn(t, attacker, attackerID)
 	send(attacker, ClientMessage{Type: TypeShoot, X: 0, Y: 0})
 	var snap game.Snapshot
 	shotSeen := false
@@ -122,15 +125,18 @@ func TestTwoPlayersPlayAFullBattleshipMatch(t *testing.T) {
 	}
 
 	// The defender answers at a free cell of the attacker's board.
-	answerCell := ClientMessage{Type: TypeShoot, X: 9, Y: 9}
-	send(defender, answerCell)
+	waitForTurn(t, defender, defenderID)
+	send(defender, ClientMessage{Type: TypeShoot, X: 9, Y: 9})
 	readState(t, defender)
 
 	// Sink the destroyer: two hits on a two-cell ship.
+	waitForTurn(t, attacker, attackerID)
 	send(attacker, ClientMessage{Type: TypeShoot, X: 0, Y: 8})
 	readState(t, attacker)
+	waitForTurn(t, defender, defenderID)
 	send(defender, ClientMessage{Type: TypeShoot, X: 9, Y: 8})
 	readState(t, defender)
+	waitForTurn(t, attacker, attackerID)
 	send(attacker, ClientMessage{Type: TypeShoot, X: 1, Y: 8})
 
 	// The sunk ship is now visible to the attacker.
@@ -143,6 +149,24 @@ func TestTwoPlayersPlayAFullBattleshipMatch(t *testing.T) {
 	if !sunk {
 		t.Fatal("sunk ship never showed up on the enemy board")
 	}
+}
+
+// waitForTurn waits until the match is waiting for the given player.
+//
+// The two players talk over different connections, so a shot sent right after
+// the opponent's shot can arrive first and be refused. The test has to wait
+// for the turn instead of assuming the order.
+func waitForTurn(t *testing.T, conn *websocket.Conn, playerID string) {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := readState(t, conn)
+		if snap.CurrentTurn == playerID {
+			return
+		}
+	}
+	t.Fatalf("the turn never came to %q", playerID)
 }
 
 // TestSnapshotMatchesProtocolShape ensures the state payload uses the field
