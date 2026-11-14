@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { BOARD_SIZE } from './board'
-import { TILE_SIZE, canvasSize, pixelToTile, renderBoard } from './renderer'
+import { GUTTER, TILE_SIZE, canvasSize, pixelToTile, renderBoard } from './renderer'
 import type { BoardView } from './types'
 
 interface RecordedRect {
@@ -14,11 +14,24 @@ interface RecordedRect {
 
 function makeCtx(): { ctx: CanvasRenderingContext2D; rects: RecordedRect[] } {
   const rects: RecordedRect[] = []
+  // The translation is applied to the recorded rectangles, so the tests
+  // assert where things really land on the canvas.
+  let offsetX = 0
+  let offsetY = 0
   const ctx = {
     imageSmoothingEnabled: true,
     fillStyle: '#000000',
+    save: vi.fn(),
+    restore: vi.fn(() => {
+      offsetX = 0
+      offsetY = 0
+    }),
+    translate: vi.fn((x: number, y: number) => {
+      offsetX += x
+      offsetY += y
+    }),
     fillRect: vi.fn((x: number, y: number, w: number, h: number) => {
-      rects.push({ color: String(ctx.fillStyle), x, y, w, h })
+      rects.push({ color: String(ctx.fillStyle), x: x + offsetX, y: y + offsetY, w, h })
     }),
   }
   return { ctx: ctx as unknown as CanvasRenderingContext2D, rects }
@@ -45,19 +58,50 @@ function boardWithShips(): BoardView {
 
 describe('canvasSize', () => {
   it('returns the logical pixel size of the board', () => {
-    expect(canvasSize(10, 10)).toEqual({ width: 10 * TILE_SIZE, height: 10 * TILE_SIZE })
+    expect(canvasSize(10, 10)).toEqual({
+      width: 10 * TILE_SIZE + GUTTER,
+      height: 10 * TILE_SIZE + GUTTER,
+    })
   })
 })
 
 describe('pixelToTile', () => {
   it('maps pixels to the tile they fall into', () => {
-    expect(pixelToTile(0, 0)).toEqual({ x: 0, y: 0 })
-    expect(pixelToTile(TILE_SIZE + 3, TILE_SIZE * 2 + 5)).toEqual({ x: 1, y: 2 })
+    expect(pixelToTile(GUTTER, GUTTER)).toEqual({ x: 0, y: 0 })
+    expect(pixelToTile(GUTTER + TILE_SIZE + 3, GUTTER + TILE_SIZE * 2 + 5)).toEqual({
+      x: 1,
+      y: 2,
+    })
   })
 
   it('returns null outside the board', () => {
+    // The gutter is not part of the play area.
     expect(pixelToTile(-1, 0)).toBeNull()
-    expect(pixelToTile(0, BOARD_SIZE * TILE_SIZE)).toBeNull()
+    expect(pixelToTile(GUTTER - 1, GUTTER)).toBeNull()
+    expect(pixelToTile(GUTTER, GUTTER + BOARD_SIZE * TILE_SIZE)).toBeNull()
+  })
+})
+
+// TestTheLabelsDoNotCoverThePlayArea checks that the coordinates are drawn in
+// the gutter and not on top of the board: drawn over it, they hid the ships
+// placed in the first row or column.
+describe('the coordinates', () => {
+  it('are drawn outside the play area', () => {
+    const { ctx, rects } = makeCtx()
+    renderBoard(ctx, boardWithShips(), { showShips: true })
+
+    // The glyph backgrounds are the only rectangles seven pixels tall.
+    const glyphs = rects.filter((r) => r.h === 7 && r.color === '#0c0e14')
+    expect(glyphs.length).toBeGreaterThan(0)
+    for (const glyph of glyphs) {
+      if (glyph.y < GUTTER) {
+        // A column label must stay above the play area.
+        expect(glyph.y + glyph.h).toBeLessThanOrEqual(GUTTER)
+      } else {
+        // A row label must stay to the left of the play area.
+        expect(glyph.x + glyph.w).toBeLessThanOrEqual(GUTTER)
+      }
+    }
   })
 })
 
@@ -122,7 +166,11 @@ describe('renderBoard', () => {
     renderBoard(ctx, emptyBoard(), { showShips: false, highlight: { x: 3, y: 4 } })
     const highlight = rects.filter((r) => r.color === '#ffffff')
     expect(highlight.length).toBeGreaterThan(0)
-    expect(highlight.some((r) => r.x === 3 * TILE_SIZE && r.y === 4 * TILE_SIZE)).toBe(true)
+    expect(
+      highlight.some(
+        (r) => r.x === GUTTER + 3 * TILE_SIZE && r.y === GUTTER + 4 * TILE_SIZE,
+      ),
+    ).toBe(true)
   })
 
   it('does not throw when the lists arrive as null', () => {
@@ -142,7 +190,9 @@ describe('renderBoard', () => {
   it('tints the sea with the player color', () => {
     const { ctx, rects } = makeCtx()
     renderBoard(ctx, emptyBoard(), { showShips: false, color: '#e94f6d' })
-    const sea = rects.find((r) => r.x === 0 && r.y === 0 && r.w === TILE_SIZE)
+    const sea = rects.find(
+      (r) => r.x === GUTTER && r.y === GUTTER && r.w === TILE_SIZE,
+    )
     expect(sea).toBeDefined()
     expect(sea!.color).not.toBe('#12304a')
     // The tint must be a blend, not the pure player color.
@@ -156,7 +206,7 @@ describe('renderBoard', () => {
     renderBoard(blue.ctx, emptyBoard(), { showShips: false, color: '#4f8ef7' })
 
     const seaOf = (rects: RecordedRect[]) =>
-      rects.find((r) => r.x === 0 && r.y === 0 && r.w === TILE_SIZE)!.color
+      rects.find((r) => r.x === GUTTER && r.y === GUTTER && r.w === TILE_SIZE)!.color
     expect(seaOf(red.rects)).not.toBe(seaOf(blue.rects))
   })
 
@@ -169,6 +219,8 @@ describe('renderBoard', () => {
       ],
     }
     renderBoard(ctx, board, { showShips: false })
-    expect(rects.some((r) => r.color === '#0c0e14' && r.x === 5 * TILE_SIZE)).toBe(true)
+    expect(
+      rects.some((r) => r.color === '#0c0e14' && r.x === GUTTER + 5 * TILE_SIZE),
+    ).toBe(true)
   })
 })

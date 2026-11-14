@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { TILE_SIZE, pixelToTile, renderBoard } from '../game/renderer'
+import { canvasSize, pixelToTile, renderBoard } from '../game/renderer'
 import type { BoardView } from '../game/types'
 
 const props = withDefaults(
@@ -25,8 +25,9 @@ const emit = defineEmits<{
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const wrapperRef = ref<HTMLElement | null>(null)
 
-const logicalWidth = computed(() => props.board.width * TILE_SIZE)
-const logicalHeight = computed(() => props.board.height * TILE_SIZE)
+// The canvas holds the play area plus the gutter with the coordinates.
+const logicalWidth = computed(() => canvasSize(props.board.width, props.board.height).width)
+const logicalHeight = computed(() => canvasSize(props.board.width, props.board.height).height)
 
 /**
  * The board is scaled by a whole number of pixels. A fractional scale would
@@ -105,8 +106,8 @@ watch([displayWidth, displayHeight], () => paint())
     <canvas
       ref="canvasRef"
       class="board-grid"
-      :width="board.width * TILE_SIZE"
-      :height="board.height * TILE_SIZE"
+      :width="canvasSize(board.width, board.height).width"
+      :height="canvasSize(board.width, board.height).height"
       :style="{ width: `${displayWidth}px`, height: `${displayHeight}px` }"
       :class="{ 'board-grid--interactive': interactive }"
       @click="onClick"
@@ -117,7 +118,8 @@ watch([displayWidth, displayHeight], () => paint())
 <style scoped>
 .board-grid__wrapper {
   width: 100%;
-  max-width: 480px;
+  /* Wide enough for the board to scale to 2x with its gutter. */
+  max-width: 520px;
   display: flex;
   justify-content: center;
 }

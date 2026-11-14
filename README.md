@@ -128,6 +128,31 @@ make test        # go test ./... + vitest
 make build       # binario Go + build de producción del frontend
 ```
 
+### Dependencias y auditoría
+
+`npm audit` debe dar **0 vulnerabilidades**. Las que no tienen corrección
+arriba (fix upstream) se resuelven con `overrides` en el `package.json` raíz,
+limitados al rango vulnerable para no romper a los paquetes que sí dependen de
+una versión antigua:
+
+```json
+"overrides": {
+  "minimatch@>=7.0.0 <11.0.1": "^11.0.8",
+  "glob@>=9.0.0 <14.0.2": "^14.0.6"
+}
+```
+
+**Al cambiar un `overrides` hay que borrar el lockfile oculto**, o npm no
+re-resuelve el árbol y aplica el cambio a medias:
+
+```bash
+rm -rf node_modules package-lock.json && npm install
+```
+
+Borrar solo `package-lock.json` no basta: npm usa
+`node_modules/.package-lock.json` como caché y da la instalación por buena.
+
+
 ## Despliegue
 
 El backend vive en **Cloud Run (GCP)** y el frontend en **Cloudflare Pages**.

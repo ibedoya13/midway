@@ -289,7 +289,7 @@ onBeforeUnmount(() => {
 
       <p class="app__join-separator">o</p>
 
-      <form class="app__join-form" @submit.prevent="joinRoom">
+      <form class="app__join-form app__join-form--join" @submit.prevent="joinRoom">
         <input
           v-model="roomCodeInput"
           class="app__input app__input--code"
@@ -432,6 +432,28 @@ onBeforeUnmount(() => {
         {{ winnerName === playerName || snapshot?.winner === playerId ? '¡Victoria!' : 'Derrota' }}
       </h2>
       <p class="app__gameover-text">Ganó {{ winnerName || 'el rival' }}</p>
+
+      <div class="app__boards app__boards--final">
+        <div class="app__board">
+          <h2 class="app__board-title">Tu mar</h2>
+          <BoardGrid
+            :board="ownBoard"
+            :show-ships="true"
+            :interactive="false"
+            :player-color="myColor"
+          />
+        </div>
+        <div class="app__board">
+          <h2 class="app__board-title">Mar enemigo</h2>
+          <BoardGrid
+            :board="enemyBoard"
+            :show-ships="false"
+            :interactive="false"
+            :player-color="enemyColor"
+          />
+        </div>
+      </div>
+
       <button class="app__button" type="button" data-restart @click="restart">
         Reiniciar
       </button>
@@ -446,11 +468,13 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 1rem;
 }
 
 .app__header {
   text-align: center;
+  flex: 0 0 auto;
 }
 
 .app__title {
@@ -507,18 +531,25 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 0.5rem;
   align-items: stretch;
+  justify-content: center;
+}
+
+/* The room code and its key sit together, centred. */
+.app__join-form--join {
+  justify-content: center;
 }
 
 .app__join-separator {
   margin: 0;
   color: var(--muted-foreground, #8b93a7);
   font-size: 0.8rem;
+  text-align: center;
 }
 
 .app__input--code {
-  width: 10ch;
+  width: 11ch;
   text-align: center;
-  letter-spacing: 0.3em;
+  letter-spacing: 0.25em;
   font-family: inherit;
 }
 
@@ -590,23 +621,31 @@ onBeforeUnmount(() => {
 
 .app__layout {
   display: flex;
-  gap: 1rem;
+  gap: 1.25rem;
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: center;
+  flex: 1 1 auto;
 }
 
 .app__boards {
   display: flex;
-  gap: 1rem;
+  gap: 1.25rem;
   flex-wrap: wrap;
   justify-content: center;
+  align-items: flex-start;
+  flex: 1 1 auto;
 }
 
 .app__board {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+  /* The board takes the space it can so the canvas scales up: the cell size
+     is a whole number of pixels, so the board grows in jumps. */
+  flex: 1 1 240px;
+  /* Room for the board at 2x, gutter included. */
+  max-width: 560px;
 }
 
 .app__board-title {
@@ -629,6 +668,10 @@ onBeforeUnmount(() => {
 }
 
 .app__gameover {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
   align-self: center;
   display: flex;
   flex-direction: column;

@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import BoardGrid from './BoardGrid.vue'
-import { TILE_SIZE } from '../game/renderer'
+import { GUTTER, TILE_SIZE } from '../game/renderer'
 import type { BoardView } from '../game/types'
 
 const board: BoardView = {
@@ -15,7 +15,14 @@ const board: BoardView = {
 
 function stubCanvas(): { ctx: Record<string, unknown>; fillRect: ReturnType<typeof vi.fn> } {
   const fillRect = vi.fn()
-  const ctx = { imageSmoothingEnabled: true, fillStyle: '#000', fillRect }
+  const ctx = {
+    imageSmoothingEnabled: true,
+    fillStyle: '#000',
+    fillRect,
+    save: vi.fn(),
+    restore: vi.fn(),
+    translate: vi.fn(),
+  }
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
     ctx as unknown as CanvasRenderingContext2D,
   )
@@ -25,8 +32,9 @@ function stubCanvas(): { ctx: Record<string, unknown>; fillRect: ReturnType<type
 function clickCell(wrapper: ReturnType<typeof mount>, x: number, y: number): void {
   const canvas = wrapper.find('canvas')
   const event = new MouseEvent('click', { bubbles: true })
-  Object.defineProperty(event, 'offsetX', { value: x * TILE_SIZE + 3 })
-  Object.defineProperty(event, 'offsetY', { value: y * TILE_SIZE + 4 })
+  // The play area starts after the gutter that holds the coordinates.
+  Object.defineProperty(event, 'offsetX', { value: GUTTER + x * TILE_SIZE + 3 })
+  Object.defineProperty(event, 'offsetY', { value: GUTTER + y * TILE_SIZE + 4 })
   canvas.element.dispatchEvent(event)
 }
 
@@ -41,8 +49,8 @@ describe('BoardGrid', () => {
       props: { board, showShips: true, interactive: false },
     })
     const canvas = wrapper.find('canvas')
-    expect(canvas.attributes('width')).toBe(String(10 * TILE_SIZE))
-    expect(canvas.attributes('height')).toBe(String(10 * TILE_SIZE))
+    expect(canvas.attributes('width')).toBe(String(10 * TILE_SIZE + GUTTER))
+    expect(canvas.attributes('height')).toBe(String(10 * TILE_SIZE + GUTTER))
   })
 
   it('paints the board when mounted', () => {
@@ -77,7 +85,7 @@ describe('BoardGrid', () => {
     })
     const canvas = wrapper.find('canvas')
     const width = Number(canvas.attributes('style')?.match(/width:\s*([\d.]+)px/)?.[1] ?? 0)
-    const logical = 10 * TILE_SIZE
+    const logical = 10 * TILE_SIZE + GUTTER
     expect(width).toBeGreaterThan(0)
     expect(width % logical).toBe(0)
     wrapper.unmount()

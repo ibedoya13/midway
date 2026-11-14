@@ -12,6 +12,14 @@ import type { BoardView, ShipView } from './types'
 /** Size in logical pixels of a single board cell. */
 export const TILE_SIZE = 24
 
+/**
+ * Width in logical pixels of the gutter that holds the coordinates.
+ *
+ * The labels live outside the play area: drawn on top of it, they hid the
+ * ships placed in the first row or column.
+ */
+export const GUTTER = 20
+
 /** Palette used by the board renderer. */
 export const PALETTE = {
   sea: '#12304a',
@@ -100,7 +108,10 @@ export function tint(base: string, accent: string, amount: number): string {
  * canvasSize returns the logical pixel size needed to draw a board.
  */
 export function canvasSize(width: number, height: number): { width: number; height: number } {
-  return { width: width * TILE_SIZE, height: height * TILE_SIZE }
+  return {
+    width: width * TILE_SIZE + GUTTER,
+    height: height * TILE_SIZE + GUTTER,
+  }
 }
 
 /**
@@ -113,8 +124,9 @@ export function pixelToTile(
   width = 10,
   height = 10,
 ): { x: number; y: number } | null {
-  const x = Math.floor(px / TILE_SIZE)
-  const y = Math.floor(py / TILE_SIZE)
+  // The play area starts after the gutter that holds the coordinates.
+  const x = Math.floor((px - GUTTER) / TILE_SIZE)
+  const y = Math.floor((py - GUTTER) / TILE_SIZE)
   if (x < 0 || y < 0 || x >= width || y >= height) return null
   return { x, y }
 }
@@ -136,6 +148,11 @@ export function renderBoard(
 
   ctx.imageSmoothingEnabled = false
 
+  // The play area is translated so that every drawing function keeps working
+  // with board coordinates, and the gutter stays free for the labels.
+  ctx.save()
+  ctx.translate(GUTTER, GUTTER)
+
   drawSea(ctx, width, height, color)
   drawGrid(ctx, width, height)
 
@@ -151,14 +168,16 @@ export function renderBoard(
     else drawSunk(ctx, shot.x, shot.y)
   })
 
-  drawLabels(ctx, width, height)
-
   if (opts.hover) {
     drawCellOverlay(ctx, opts.hover.x, opts.hover.y, PALETTE.hover)
   }
   if (opts.highlight) {
     drawHighlight(ctx, opts.highlight.x, opts.highlight.y)
   }
+
+  ctx.restore()
+
+  drawLabels(ctx, width, height)
 }
 
 function drawSea(
@@ -280,11 +299,12 @@ function drawHighlight(ctx: CanvasRenderingContext2D, x: number, y: number): voi
 }
 
 function drawLabels(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  // The labels sit in the gutter, outside the play area.
   for (let x = 0; x < Math.min(width, COLUMN_LABELS.length); x++) {
-    drawGlyph(ctx, COLUMN_LABELS[x], x * TILE_SIZE + 5, 4)
+    drawGlyph(ctx, COLUMN_LABELS[x], GUTTER + x * TILE_SIZE + 5, 4)
   }
   for (let y = 0; y < Math.min(height, 10); y++) {
-    drawGlyph(ctx, String(y + 1), 5, y * TILE_SIZE + 5)
+    drawGlyph(ctx, String(y + 1), 1, GUTTER + y * TILE_SIZE + 5)
   }
 }
 

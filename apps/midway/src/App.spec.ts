@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
 import BoardGrid from './components/BoardGrid.vue'
+import { GUTTER } from './game/renderer'
 import type { Snapshot } from './game/types'
 
 const h = vi.hoisted(() => {
@@ -101,6 +102,9 @@ function stubCanvas(): void {
     imageSmoothingEnabled: true,
     fillStyle: '#000000',
     fillRect: vi.fn(),
+    save: vi.fn(),
+    restore: vi.fn(),
+    translate: vi.fn(),
   } as unknown as CanvasRenderingContext2D)
 }
 
@@ -113,8 +117,9 @@ function mountApp() {
 function clickCell(wrapper: ReturnType<typeof mount>, index: number, x: number, y: number): void {
   const canvas = wrapper.findAll('canvas')[index]
   const event = new MouseEvent('click', { bubbles: true })
-  Object.defineProperty(event, 'offsetX', { value: 24 * x + 3 })
-  Object.defineProperty(event, 'offsetY', { value: 24 * y + 4 })
+  // The play area starts after the gutter that holds the coordinates.
+  Object.defineProperty(event, 'offsetX', { value: GUTTER + 24 * x + 3 })
+  Object.defineProperty(event, 'offsetY', { value: GUTTER + 24 * y + 4 })
   canvas.element.dispatchEvent(event)
 }
 
@@ -260,8 +265,8 @@ describe('App', () => {
     await wrapper.find('[data-ship="carrier"]').trigger('click')
     const canvas = wrapper.findAll('canvas')[0]
     const event = new MouseEvent('click', { bubbles: true })
-    Object.defineProperty(event, 'offsetX', { value: 24 * 2 + 3 })
-    Object.defineProperty(event, 'offsetY', { value: 24 * 4 + 4 })
+    Object.defineProperty(event, 'offsetX', { value: GUTTER + 24 * 2 + 3 })
+    Object.defineProperty(event, 'offsetY', { value: GUTTER + 24 * 4 + 4 })
     canvas.element.dispatchEvent(event)
     await flushPromises()
     expect(h.sent).toContainEqual({
@@ -282,8 +287,8 @@ describe('App', () => {
     await flushPromises()
     const enemy = wrapper.findAll('canvas')[1]
     const event = new MouseEvent('click', { bubbles: true })
-    Object.defineProperty(event, 'offsetX', { value: 24 * 1 + 1 })
-    Object.defineProperty(event, 'offsetY', { value: 24 * 2 + 2 })
+    Object.defineProperty(event, 'offsetX', { value: GUTTER + 24 * 1 + 1 })
+    Object.defineProperty(event, 'offsetY', { value: GUTTER + 24 * 2 + 2 })
     enemy.element.dispatchEvent(event)
     await flushPromises()
     expect(h.sent.filter((m) => m.type === 'shoot')).toHaveLength(0)
@@ -298,8 +303,8 @@ describe('App', () => {
     await flushPromises()
     const enemy = wrapper.findAll('canvas')[1]
     const event = new MouseEvent('click', { bubbles: true })
-    Object.defineProperty(event, 'offsetX', { value: 24 * 1 + 1 })
-    Object.defineProperty(event, 'offsetY', { value: 24 * 2 + 2 })
+    Object.defineProperty(event, 'offsetX', { value: GUTTER + 24 * 1 + 1 })
+    Object.defineProperty(event, 'offsetY', { value: GUTTER + 24 * 2 + 2 })
     enemy.element.dispatchEvent(event)
     await flushPromises()
     expect(h.sent).toContainEqual({ type: 'shoot', x: 1, y: 2 })

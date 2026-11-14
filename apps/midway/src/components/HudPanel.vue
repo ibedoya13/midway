@@ -80,9 +80,11 @@ const winnerPlayer = computed(
 <style scoped>
 .hud {
   display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  padding: 1rem;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 0.85rem;
   border: 2px solid #0c0e14;
   background: #202533;
 }
@@ -100,15 +102,16 @@ const winnerPlayer = computed(
   margin: 0;
   padding: 0;
   display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
 .hud__player {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 0.45rem;
+  gap: 0.4rem;
+  padding: 0.25rem 0.45rem;
   border: 1px solid #3a4157;
   background: #12141b;
 }
@@ -121,7 +124,7 @@ const winnerPlayer = computed(
 }
 
 .hud__ready {
-  margin-left: auto;
+  margin-left: 0.2rem;
   font-size: 0.7rem;
   color: #8b93a7;
   text-transform: uppercase;
@@ -129,10 +132,11 @@ const winnerPlayer = computed(
 
 .hud__turn {
   margin: 0;
-  padding: 0.35rem 0.5rem;
+  padding: 0.3rem 0.55rem;
   border: 1px solid #3a4157;
   background: #12141b;
   color: #9ad9ff;
+  font-size: 0.9rem;
 }
 
 .hud__turn--idle {
@@ -142,8 +146,8 @@ const winnerPlayer = computed(
 .hud__score {
   margin: 0;
   display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
+  flex-direction: row;
+  gap: 0.9rem;
   font-size: 0.85rem;
   color: #8b93a7;
 }
@@ -162,12 +166,18 @@ const winnerPlayer = computed(
 }
 
 .hud__restart {
-  padding: 0.5rem;
-  border: 2px solid #0c0e14;
-  background: #ffd447;
-  color: #12141b;
+  margin-left: auto;
+  padding: 0.3rem 0.7rem;
+  border: 2px solid #3a4157;
+  background: transparent;
+  color: #8b93a7;
   font: inherit;
-  font-weight: 700;
+  font-size: 0.8rem;
   cursor: pointer;
+}
+
+.hud__restart:hover {
+  border-color: #ffd447;
+  color: #ffd447;
 }
 </style>
