@@ -142,6 +142,21 @@ una versión antigua:
 }
 ```
 
+### Por qué TypeScript se queda en 6.x
+
+`typescript-eslint` declara `typescript >=4.8.4 <6.1.0`. Con TypeScript 7
+**`npm install` falla con `ERESOLVE`** en una instalación limpia, así que
+rompería CI, un clon nuevo y el despliegue.
+
+Además, TypeScript 7 es el compilador **nativo**: su módulo principal solo
+expone la versión y el binario `tsc`; la API de JavaScript vive en rutas
+`./unstable/*`. Instalado a la fuerza (`--no-save`) el lint y el typecheck
+funcionan, pero sobre una API inestable y sin instalación reproducible.
+
+Por eso la versión es **6.0.3**: la última que encaja en el rango declarado y
+la que permite `npm install` limpio. Para subir a 7 hará falta que
+`typescript-eslint` amplíe su rango.
+
 **Al cambiar un `overrides` hay que borrar el lockfile oculto**, o npm no
 re-resuelve el árbol y aplica el cambio a medias:
 
