@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import BoardGrid from './components/BoardGrid.vue'
 import FleetPanel from './components/FleetPanel.vue'
 import HudPanel from './components/HudPanel.vue'
+import { GameAudio } from './game/audio'
 import { GameClient } from './game/client'
 import { COLUMN_LABELS } from './game/board'
 import {
@@ -23,6 +24,7 @@ const WS_URL = resolveWebSocketUrl(
 )
 
 const client = new GameClient(WS_URL)
+const audio = new GameAudio()
 
 const snapshot = ref<Snapshot | null>(null)
 const playerId = ref('')
@@ -86,6 +88,40 @@ const enemyColor = computed(
   () =>
     players.value.find((player) => player.id !== playerId.value)?.color ?? '#4f8ef7',
 )
+
+// The battle theme plays in a loop while the match is on.
+watch(phase, (value) => {
+  if (value === 'playing') {
+    audio.startTheme()
+    return
+  }
+  audio.stopTheme()
+  // The theme is over a megabyte: it is fetched while the fleets are placed.
+  if (value === 'setup') audio.warmUp()
+})
+
+// The shots of the enemy board are the ones this player made, so their
+// result is the feedback of the last shot.
+watch(
+  () => enemyBoard.value.shots.length,
+  (count, previous) => {
+    if (previous === undefined || count <= previous) return
+    const shot = enemyBoard.value.shots[count - 1]
+    if (!shot) return
+    if (shot.result === 'water') {
+      audio.playMiss()
+      return
+    }
+    audio.playHit()
+  },
+)
+
+/** unlockAudio lets the browser play the sounds after the first click. */
+function unlockAudio(): void {
+  audio.unlock()
+  window.removeEventListener('pointerdown', unlockAudio)
+  window.removeEventListener('keydown', unlockAudio)
+}
 
 /** createRoom asks the server for a new room. */
 function createRoom(): void {
@@ -246,10 +282,15 @@ onMounted(() => {
     reconnecting.value = true
   })
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('pointerdown', unlockAudio)
+  window.addEventListener('keydown', unlockAudio)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('pointerdown', unlockAudio)
+  window.removeEventListener('keydown', unlockAudio)
+  audio.stopTheme()
   client.disconnect()
 })
 </script>

@@ -121,6 +121,32 @@ Reglas de las salas:
    El turno pasa al oponente.
 3. **Victoria.** Gana el primero que hunde toda la flota enemiga.
 
+## Sonido
+
+Los ficheros viven en `apps/midway/public/` y se sirven desde la raíz:
+
+| Fichero | Cuándo suena |
+|---|---|
+| `midway-battle-theme.mp3` | Al empezar la partida, en bucle hasta que termina |
+| `hit.mp3` | Cuando tu disparo acierta a un barco |
+| `miss.mp3` | Cuando tu disparo cae al agua |
+
+Cada jugador oye **su propio** disparo: los disparos del rival llegan al tablero
+propio y no suenan en su cliente.
+
+La lógica vive en `apps/midway/src/game/audio.ts` y se engancha en `App.vue`
+con dos `watch`: uno sobre la fase de la partida y otro sobre el número de
+disparos del tablero enemigo.
+
+Dos detalles que conviene conocer:
+
+- **El navegador bloquea el audio** hasta que el jugador interactúa con la
+  página. Por eso el tema se reintenta con `unlock()` en el primer `pointerdown`
+  o `keydown`. Un fallo al reproducir se ignora siempre: un juego mudo es
+  mejor que un juego roto.
+- **El tema pesa más de un megabyte**, así que no se pide al abrir la página,
+  sino al entrar en una sala (`warmUp()`), mientras se colocan las flotas.
+
 ## Pruebas
 
 ```bash

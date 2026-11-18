@@ -457,3 +457,168 @@ describe('App', () => {
     expect(h.sent).toContainEqual({ type: 'ready' })
   })
 })
+
+describe('audio', () => {
+  let played: string[]
+
+  beforeEach(() => {
+    // The state listeners of the other tests would start their own theme.
+    h.stateCallbacks.length = 0
+    h.welcomeCallbacks.length = 0
+    h.errorCallbacks.length = 0
+    h.closeCallbacks.length = 0
+    h.sent.length = 0
+    played = []
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (
+      this: HTMLMediaElement,
+    ) {
+      played.push(this.src)
+      return Promise.resolve()
+    })
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** pushState sends a state to every listener of the app. */
+  function pushState(state: Snapshot): void {
+    h.stateCallbacks.forEach((cb) => cb(state))
+  }
+
+  it('plays the battle theme when the match starts', async () => {
+    mountApp()
+    pushState(snapshot({ phase: 'playing' }))
+    await flushPromises()
+
+    expect(played.filter((src) => src.includes('midway-battle-theme.mp3'))).toHaveLength(1)
+  })
+
+  it('stops the battle theme when the match is over', async () => {
+    const paused: string[] = []
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(function (
+      this: HTMLMediaElement,
+    ) {
+      paused.push(this.src)
+    })
+    mountApp()
+    pushState(snapshot({ phase: 'playing' }))
+    await flushPromises()
+    pushState(snapshot({ phase: 'gameover', winner: 'p1' }))
+    await flushPromises()
+
+    expect(paused.some((src) => src.includes('midway-battle-theme.mp3'))).toBe(true)
+  })
+
+  it('plays the miss sound when the shot falls on the water', async () => {
+    mountApp()
+    pushState(snapshot({ phase: 'playing' }))
+    await flushPromises()
+    pushState(
+      snapshot({
+        phase: 'playing',
+        enemy: {
+          width: 10,
+          height: 10,
+          ships: [],
+          sunkShips: [],
+          shots: [{ x: 3, y: 4, result: 'water' }],
+        },
+      }),
+    )
+    await flushPromises()
+
+    expect(played.some((src) => src.includes('miss.mp3'))).toBe(true)
+    expect(played.some((src) => src.includes('hit.mp3'))).toBe(false)
+  })
+
+  it('plays the hit sound when the shot hits a ship', async () => {
+    mountApp()
+    pushState(snapshot({ phase: 'playing' }))
+    await flushPromises()
+    pushState(
+      snapshot({
+        phase: 'playing',
+        enemy: {
+          width: 10,
+          height: 10,
+          ships: [],
+          sunkShips: [],
+          shots: [{ x: 3, y: 4, result: 'hit' }],
+        },
+      }),
+    )
+    await flushPromises()
+
+    expect(played.some((src) => src.includes('hit.mp3'))).toBe(true)
+    expect(played.some((src) => src.includes('miss.mp3'))).toBe(false)
+  })
+
+  it('plays the hit sound when the shot sinks a ship', async () => {
+    mountApp()
+    pushState(snapshot({ phase: 'playing' }))
+    await flushPromises()
+    pushState(
+      snapshot({
+        phase: 'playing',
+        enemy: {
+          width: 10,
+          height: 10,
+          ships: [],
+          sunkShips: [],
+          shots: [{ x: 3, y: 4, result: 'sunk' }],
+        },
+      }),
+    )
+    await flushPromises()
+
+    expect(played.some((src) => src.includes('hit.mp3'))).toBe(true)
+  })
+
+  it('stays silent when the rival shoots', async () => {
+    mountApp()
+    pushState(snapshot({ phase: 'playing' }))
+    await flushPromises()
+    // The shots of the rival land on the own board.
+    pushState(
+      snapshot({
+        phase: 'playing',
+        own: {
+          width: 10,
+          height: 10,
+          ships: [],
+          sunkShips: [],
+          shots: [{ x: 3, y: 4, result: 'water' }],
+        },
+      }),
+    )
+    await flushPromises()
+
+    expect(played.some((src) => src.includes('miss.mp3'))).toBe(false)
+    expect(played.some((src) => src.includes('hit.mp3'))).toBe(false)
+  })
+
+  it('does not repeat a sound when the state arrives again', async () => {
+    mountApp()
+    pushState(snapshot({ phase: 'playing' }))
+    await flushPromises()
+    const shot = snapshot({
+      phase: 'playing',
+      enemy: {
+        width: 10,
+        height: 10,
+        ships: [],
+        sunkShips: [],
+        shots: [{ x: 3, y: 4, result: 'water' }],
+      },
+    })
+    pushState(shot)
+    await flushPromises()
+    const before = played.filter((src) => src.includes('miss.mp3')).length
+    pushState(shot)
+    await flushPromises()
+
+    expect(played.filter((src) => src.includes('miss.mp3')).length).toBe(before)
+  })
+})
